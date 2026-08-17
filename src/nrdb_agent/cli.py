@@ -1,6 +1,7 @@
 import argparse
 import json
 
+from .metrics import annotation_metrics, job_annotation_metrics
 from .nrdb import NrdbClient
 from .runner import run_job
 
@@ -9,13 +10,18 @@ def _print_json(value):
 	print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
+def _format_rate(value):
+	return "n/a" if value is None else "{:.1%}".format(value)
+
+
 def _print_results(payload):
 	job = payload["job"]
+	rows = payload.get("results", [])
 	print("job {} | dataset {} ({}) | status {} | model {}".format(
 		job["id"], job["dataset_id"], job.get("dataset_name", ""), job.get("status", ""), job.get("model_name", "")
 	))
 	print("=" * 80)
-	for index, row in enumerate(payload.get("results", []), start=1):
+	for index, row in enumerate(rows, start=1):
 		print("[{}] sentence {}{}".format(index, row["sentence_id"], " / " + str(row["example_id"]) if row.get("example_id") else ""))
 		print("source:      {}".format(row.get("source_text") or ""))
 		print("segmented:   {}".format(row.get("ai_segmented") or ""))
@@ -31,7 +37,27 @@ def _print_results(payload):
 		print("decision:    {} | confidence: {} | exact: {}".format(
 			row.get("decision") or "", row.get("confidence") or "", row.get("exact_match") if row.get("exact_match") is not None else "n/a"
 		))
+		if row.get("gold_annotation"):
+			metrics = annotation_metrics(row.get("ai_annotation"), row.get("gold_annotation"))
+			print("ID match:    {} ({}/{}) | S:{} I:{} D:{}".format(
+				_format_rate(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"]),
+				metrics["substitutions"], metrics["insertions"], metrics["deletions"],
+			))
 		print("-" * 80)
+
+	metrics = job_annotation_metrics(rows)
+	if metrics["sentences_scored"]:
+		print("ID METRICS")
+		print("  sentences scored: {}".format(metrics["sentences_scored"]))
+		print("  ID match rate:    {} ({}/{} aligned IDs)".format(
+			_format_rate(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"])
+		))
+		print("  ID error rate:    {} ({} edits / {} gold IDs)".format(
+			_format_rate(metrics["id_error_rate"]), metrics["edits"], metrics["gold_ids"]
+		))
+		print("  substitutions:    {}".format(metrics["substitutions"]))
+		print("  insertions:       {}".format(metrics["insertions"]))
+		print("  deletions:        {}".format(metrics["deletions"]))
 
 
 def main():
