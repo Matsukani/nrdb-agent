@@ -64,6 +64,19 @@ def parse_final_json(text):
 	return payload
 
 
+def _response_output_as_input(response):
+	"""Serialize Responses output items so store=False conversations stay local."""
+	items = []
+	for output in response.output:
+		if hasattr(output, "model_dump"):
+			items.append(output.model_dump(exclude_none=True))
+		elif isinstance(output, dict):
+			items.append(dict(output))
+		else:
+			raise TypeError("unsupported response output item: {}".format(type(output).__name__))
+	return items
+
+
 class AnnotationAgent:
 	def __init__(self, nrdb, model_name, client=None, max_rounds=10):
 		self.nrdb = nrdb
@@ -90,10 +103,14 @@ class AnnotationAgent:
 			"annotation_schema_id": int(job["annotation_schema_id"]),
 			"nrdb_morph": morph_result,
 		}
+		conversation_input = [{
+			"role": "user",
+			"content": json.dumps(input_payload, ensure_ascii=False),
+		}]
 		response = self.client.responses.create(
 			model=self.model_name,
 			instructions=INSTRUCTIONS,
-			input=json.dumps(input_payload, ensure_ascii=False),
+			input=conversation_input,
 			tools=TOOLS,
 			store=False,
 		)
@@ -103,16 +120,21 @@ class AnnotationAgent:
 				result = parse_final_json(response.output_text)
 				result["model_response_id"] = response.id
 				return result
-			outputs = []
+
+			conversation_input.extend(_response_output_as_input(response))
 			for call in calls:
 				arguments = json.loads(call.arguments)
 				tool_result = self._tool_result(call.name, arguments, item, int(job["annotation_schema_id"]))
-				outputs.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(tool_result, ensure_ascii=False)})
+				conversation_input.append({
+					"type": "function_call_output",
+					"call_id": call.call_id,
+					"output": json.dumps(tool_result, ensure_ascii=False),
+				})
+
 			response = self.client.responses.create(
 				model=self.model_name,
 				instructions=INSTRUCTIONS,
-				previous_response_id=response.id,
-				input=outputs,
+				input=conversation_input,
 				tools=TOOLS,
 				store=False,
 			)
