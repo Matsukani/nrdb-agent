@@ -46,3 +46,16 @@ def test_annotation_v5_adds_dui_and_phrase_local_red_constraints():
 	assert "Never use a repeated element in another phrase elsewhere in the utterance as evidence for red" in instructions
 	assert "afn may only follow an adjectival expression" in instructions
 	assert "Annotation and translation are separate phases" in instructions
+
+
+def test_annotation_v6_replaces_hard_dui_rule_with_regional_form_support():
+	instructions = instructions_for_version("annotation-v6")
+	assert "surface segment dui is never the focus marker foc" not in instructions
+	assert "form_id_support(X, Y)" in instructions
+	assert "current utterance's dialect region" in instructions
+	assert "Zero support is evidence against a candidate, not an absolute prohibition" in instructions
+	assert "surface_total" in instructions
+	assert "candidate_count" in instructions
+	assert "strictly phrase-local" in instructions
+	assert "afn may only follow an adjectival expression" in instructions
+	assert "Annotation and translation are separate phases" in instructions
