@@ -29,8 +29,8 @@ Final response must be one JSON object and no surrounding prose:
 V2_RULES = """
 
 Miyako annotation conventions for annotation-v2:
-- Do not add ;cvb to a verb when the following verbal morphology is ipf. In this annotation scheme, ipf does not take a preceding ;cvb analysis.
-- Treat red as weak evidence. Do not prefer an analysis merely because red is present when another analysis is better supported by morphology, dictionary grounding, corpus examples, or the explicit conventions above.
+- When a verb is followed by ipf morphology, the verbal lexical ID should normally carry ;cvb before ipf (for example V;cvb-ipf), unless strong corpus evidence shows otherwise.
+- Within the same phrase, if two elements are repeated, the second occurrence is almost certainly the reduplication marker red. Prefer red for that second repeated occurrence unless strong contrary evidence exists.
 """
 
 
