@@ -1,7 +1,7 @@
 import argparse
 import json
 
-from .metrics import annotation_metrics, job_annotation_metrics
+from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
 from .runner import run_job
 
@@ -14,7 +14,7 @@ def _pct(value):
 	return "n/a" if value is None else "{:.1f}%".format(100.0 * value)
 
 
-def _print_results(payload):
+def _print_results(payload, show_sentences=0):
 	job = payload["job"]
 	rows = payload.get("results", [])
 	print("job {} | dataset {} ({}) | status {} | model {} | prompt {}".format(
@@ -22,34 +22,66 @@ def _print_results(payload):
 		job.get("model_name", ""), job.get("prompt_version", "")
 	))
 	print("=" * 80)
-	for index, row in enumerate(rows, start=1):
-		print("[{}] sentence {}{}".format(index, row["sentence_id"], " / " + str(row["example_id"]) if row.get("example_id") else ""))
-		print("source:      {}".format(row.get("source_text") or ""))
-		print("segmented:   {}".format(row.get("ai_segmented") or ""))
-		print("annotation:  {}".format(row.get("ai_annotation") or ""))
-		if row.get("trsl_ai"):
-			print("translation: {}".format(row["trsl_ai"]))
-		if row.get("gold_translation_jp"):
-			print("gold trsl:   {}".format(row["gold_translation_jp"]))
-		elif row.get("translation_jp"):
-			print("human trsl:  {}".format(row["translation_jp"]))
-		if row.get("gold_annotation"):
-			print("gold ann:    {}".format(row["gold_annotation"]))
-		metrics = annotation_metrics(row.get("ai_annotation"), row.get("gold_annotation")) if row.get("gold_annotation") else None
-		linguistic_exact = int(metrics["linguistic_exact"]) if metrics is not None else "n/a"
-		raw_exact = row.get("exact_match") if row.get("exact_match") is not None else "n/a"
-		exact_suffix = ""
-		if metrics is not None and raw_exact != "n/a" and int(raw_exact) != linguistic_exact:
-			exact_suffix = " | raw exact: {}".format(raw_exact)
-		print("decision:    {} | confidence: {} | exact: {}{}".format(
-			row.get("decision") or "", row.get("confidence") or "", linguistic_exact, exact_suffix
-		))
-		if metrics is not None:
-			print("ID match:    {} ({}/{}) | S:{} I:{} D:{}".format(
-				_pct(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"]),
-				metrics["substitutions"], metrics["insertions"], metrics["deletions"],
+
+	if show_sentences:
+		shown_rows = rows if show_sentences < 0 else rows[:show_sentences]
+		for index, row in enumerate(shown_rows, start=1):
+			print("[{}] sentence {}{}".format(index, row["sentence_id"], " / " + str(row["example_id"]) if row.get("example_id") else ""))
+			print("source:      {}".format(row.get("source_text") or ""))
+			print("segmented:   {}".format(row.get("ai_segmented") or ""))
+			if row.get("gold_segmented"):
+				print("gold seg:    {}".format(row.get("gold_segmented") or ""))
+			print("annotation:  {}".format(row.get("ai_annotation") or ""))
+			if row.get("trsl_ai"):
+				print("translation: {}".format(row["trsl_ai"]))
+			if row.get("gold_translation_jp"):
+				print("gold trsl:   {}".format(row["gold_translation_jp"]))
+			elif row.get("translation_jp"):
+				print("human trsl:  {}".format(row["translation_jp"]))
+			if row.get("gold_annotation"):
+				print("gold ann:    {}".format(row["gold_annotation"]))
+			metrics = annotation_metrics(row.get("ai_annotation"), row.get("gold_annotation")) if row.get("gold_annotation") else None
+			linguistic_exact = int(metrics["linguistic_exact"]) if metrics is not None else "n/a"
+			raw_exact = row.get("exact_match") if row.get("exact_match") is not None else "n/a"
+			exact_suffix = ""
+			if metrics is not None and raw_exact != "n/a" and int(raw_exact) != linguistic_exact:
+				exact_suffix = " | raw exact: {}".format(raw_exact)
+			print("decision:    {} | confidence: {} | exact: {}{}".format(
+				row.get("decision") or "", row.get("confidence") or "", linguistic_exact, exact_suffix
 			))
-		print("-" * 80)
+			if row.get("gold_segmented"):
+				seg_metrics = segmentation_metrics(row.get("ai_segmented"), row.get("gold_segmented"))
+				print("SEG boundary: P={} R={} F1={} | exact: {} | FP:{} FN:{}".format(
+					_pct(seg_metrics["boundary_precision"]), _pct(seg_metrics["boundary_recall"]), _pct(seg_metrics["boundary_f1"]),
+					int(seg_metrics["exact"]), seg_metrics["false_positive_boundaries"], seg_metrics["false_negative_boundaries"],
+				))
+			if metrics is not None:
+				print("ID match:    {} ({}/{}) | S:{} I:{} D:{}".format(
+					_pct(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"]),
+					metrics["substitutions"], metrics["insertions"], metrics["deletions"],
+				))
+			print("-" * 80)
+		if show_sentences > 0 and len(rows) > show_sentences:
+			print("showing {} of {} sentences (use --show-sentences with no number to show all)".format(show_sentences, len(rows)))
+			print("-" * 80)
+
+	seg_metrics = job_segmentation_metrics(rows)
+	if seg_metrics["sentences_scored"]:
+		print("SEGMENTATION METRICS")
+		print("  sentences scored: {}".format(seg_metrics["sentences_scored"]))
+		print("  exact matches:    {} ({})".format(seg_metrics["exact_matches"], _pct(seg_metrics["exact_accuracy"])))
+		print("  boundary precision: {} ({}/{} predicted boundaries)".format(
+			_pct(seg_metrics["boundary_precision"]), seg_metrics["correct_boundaries"], seg_metrics["predicted_boundaries"]
+		))
+		print("  boundary recall:    {} ({}/{} gold boundaries)".format(
+			_pct(seg_metrics["boundary_recall"]), seg_metrics["correct_boundaries"], seg_metrics["gold_boundaries"]
+		))
+		print("  boundary F1:        {}".format(_pct(seg_metrics["boundary_f1"])))
+		print("  false positives:    {}".format(seg_metrics["false_positive_boundaries"]))
+		print("  false negatives:    {}".format(seg_metrics["false_negative_boundaries"]))
+		if seg_metrics["surface_mismatches"]:
+			print("  surface mismatches: {}".format(seg_metrics["surface_mismatches"]))
+		print()
 
 	metrics = job_annotation_metrics(rows)
 	if metrics["sentences_scored"]:
@@ -74,7 +106,9 @@ def _print_results(payload):
 def _show_with_linguistic_metrics(nrdb, job_id):
 	summary = nrdb.summary(job_id)
 	results = nrdb.job_results(job_id)
-	metrics = job_annotation_metrics(results.get("results", []))
+	rows = results.get("results", [])
+	metrics = job_annotation_metrics(rows)
+	seg_metrics = job_segmentation_metrics(rows)
 	if metrics["sentences_scored"]:
 		summary["summary"]["raw_exact_matches"] = summary["summary"].get("exact_matches")
 		summary["summary"]["raw_exact_accuracy"] = summary["summary"].get("exact_accuracy")
@@ -82,6 +116,12 @@ def _show_with_linguistic_metrics(nrdb, job_id):
 		summary["summary"]["exact_accuracy"] = metrics["linguistic_exact_accuracy"]
 		summary["summary"]["id_match_rate"] = metrics["id_match_rate"]
 		summary["summary"]["id_error_rate"] = metrics["id_error_rate"]
+	if seg_metrics["sentences_scored"]:
+		summary["summary"]["segmentation_exact_matches"] = seg_metrics["exact_matches"]
+		summary["summary"]["segmentation_exact_accuracy"] = seg_metrics["exact_accuracy"]
+		summary["summary"]["segmentation_boundary_precision"] = seg_metrics["boundary_precision"]
+		summary["summary"]["segmentation_boundary_recall"] = seg_metrics["boundary_recall"]
+		summary["summary"]["segmentation_boundary_f1"] = seg_metrics["boundary_f1"]
 	return summary
 
 
@@ -110,8 +150,9 @@ def main():
 	show = sub.add_parser("show", help="Show audit summary for one job")
 	show.add_argument("job_id", type=int)
 
-	results = sub.add_parser("results", help="Show stored sentence-level results for one job")
+	results = sub.add_parser("results", help="Show aggregate metrics and optionally sentence-level results for one job")
 	results.add_argument("job_id", type=int)
+	results.add_argument("--show-sentences", nargs="?", const=-1, default=0, type=int, metavar="N", help="Show N sentence results; omit N to show all")
 
 	args = parser.parse_args()
 	nrdb = NrdbClient(args.agent_url, args.morph_url)
@@ -127,7 +168,9 @@ def main():
 	elif args.command == "show":
 		_print_json(_show_with_linguistic_metrics(nrdb, args.job_id))
 	elif args.command == "results":
-		_print_results(nrdb.job_results(args.job_id))
+		if args.show_sentences < -1:
+			parser.error("--show-sentences must be a non-negative number, or omitted to show all")
+		_print_results(nrdb.job_results(args.job_id), show_sentences=args.show_sentences)
 	return 0
 
 
