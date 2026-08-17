@@ -45,6 +45,13 @@ Additional Miyako annotation convention for annotation-v4:
 - afn may only follow an adjectival expression. Do not analyze a form as afn after a non-adjectival expression; in that environment choose another supported candidate such as ng:nu when the morphology and corpus evidence support it.
 """
 
+V5_RULES = """
+
+Additional Miyako annotation conventions for annotation-v5:
+- The surface segment dui is never the focus marker foc. If a candidate assigns foc to a segment realized as dui, reject that analysis and choose another candidate supported by morphology and corpus evidence.
+- The reduplication heuristic for red is strictly phrase-local. Only repetition inside the same whitespace-delimited phrase can license red. Never use a repeated element in another phrase elsewhere in the utterance as evidence for red. Inside one phrase, when an element is immediately or clearly repeated, the second occurrence is strongly expected to be red unless strong contrary evidence exists.
+"""
+
 TRANSLATION_INSTRUCTIONS = """You are the constrained NRDB Japanese translation phase.
 The segmentation and morphemic annotation supplied to you have already been finalized and are FROZEN. You must not revise, reinterpret, or replace them.
 
@@ -103,6 +110,8 @@ def instructions_for_version(prompt_version):
 		return BASE_INSTRUCTIONS + V2_RULES + V3_ANNOTATION_RULES
 	if version == "annotation-v4":
 		return BASE_INSTRUCTIONS + V2_RULES + V3_ANNOTATION_RULES + V4_RULES
+	if version == "annotation-v5":
+		return BASE_INSTRUCTIONS + V2_RULES + V3_ANNOTATION_RULES + V4_RULES + V5_RULES
 	raise ValueError("unsupported prompt_version: {}".format(version))
 
 
@@ -355,7 +364,7 @@ class AnnotationAgent:
 			if not calls:
 				result = parse_final_json(response.output_text)
 				result["model_response_id"] = response.id
-				if prompt_version in {"annotation-v3", "annotation-v4"}:
+				if prompt_version in {"annotation-v3", "annotation-v4", "annotation-v5"}:
 					result["trsl_ai"] = ""
 					if job.get("produce_translation") and result.get("annotation") and result["decision"] != "failed":
 						translation = self._translate_frozen(item, job, result)
