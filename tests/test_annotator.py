@@ -7,9 +7,15 @@ from nrdb_agent.annotator import AnnotationAgent, _compact_morph, _compact_tool_
 
 
 def test_parse_final_json_accepts_proposal():
-	result = parse_final_json('{"segmented":"an-na","annotation":"dm-top","decision":"proposed","confidence":0.91,"evidence":{}}')
+	result = parse_final_json('{"segmented":"an-na","annotation":"dm-top","trsl_ai":"頭だ。","decision":"proposed","confidence":0.91,"evidence":{}}')
 	assert result["decision"] == "proposed"
 	assert result["confidence"] == 0.91
+	assert result["trsl_ai"] == "頭だ。"
+
+
+def test_parse_final_json_defaults_translation_to_blank():
+	result = parse_final_json('{"segmented":"an-na","annotation":"dm-top","decision":"proposed","confidence":0.91,"evidence":{}}')
+	assert result["trsl_ai"] == ""
 
 
 def test_parse_final_json_accepts_fenced_json():
@@ -69,7 +75,7 @@ class FakeResponses:
 		return SimpleNamespace(
 			id="resp_final",
 			output=[],
-			output_text='{"segmented":"anna","annotation":"頭an","decision":"uncertain","confidence":0.6,"evidence":{}}',
+			output_text='{"segmented":"anna","annotation":"頭an","trsl_ai":"頭だ。","decision":"uncertain","confidence":0.6,"evidence":{}}',
 		)
 
 
@@ -94,14 +100,16 @@ def test_annotation_agent_continues_tools_without_previous_response_id():
 	agent = AnnotationAgent(FakeNrdb(), "test-model", client=client)
 	result = agent.annotate(
 		{"sentence_id": 1, "dialect_id": 17, "dialect_region": "Miyako", "text": "anna", "translation_jp": "頭"},
-		{"annotation_schema_id": 2},
+		{"annotation_schema_id": 2, "produce_translation": True},
 		{"segmented": "anna", "annotation": "頭an", "huge": "x" * 20000},
 	)
 	assert result["model_response_id"] == "resp_final"
+	assert result["trsl_ai"] == "頭だ。"
 	assert len(client.responses.calls) == 2
 	first = client.responses.calls[0]
 	second = client.responses.calls[1]
 	assert first["max_output_tokens"] == 800
+	assert '"produce_translation": true' in first["input"][0]["content"]
 	assert "huge" not in first["input"][0]["content"]
 	assert "previous_response_id" not in second
 	assert any(item.get("type") == "function_call" for item in second["input"])
