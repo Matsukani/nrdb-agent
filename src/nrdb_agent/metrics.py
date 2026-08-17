@@ -1,7 +1,10 @@
 import re
+from collections import Counter
 
 
 ID_SPLIT_RE = re.compile(r"[\s\u3000\-;]+")
+MISSING = "<missing>"
+EXTRA = "<extra>"
 
 
 def annotation_ids(annotation):
@@ -10,7 +13,7 @@ def annotation_ids(annotation):
 
 
 def align_ids(predicted, gold):
-	"""Levenshtein-align ID sequences and return auditable operation counts."""
+	"""Levenshtein-align ID sequences and return operation counts and error pairs."""
 	predicted = list(predicted)
 	gold = list(gold)
 	rows = len(gold) + 1
@@ -38,6 +41,7 @@ def align_ids(predicted, gold):
 			dp[i][j], back[i][j] = min(choices, key=lambda value: value[0])
 
 	counts = {"matches": 0, "substitutions": 0, "insertions": 0, "deletions": 0}
+	confusions = []
 	i = len(gold)
 	j = len(predicted)
 	while i > 0 or j > 0:
@@ -48,17 +52,21 @@ def align_ids(predicted, gold):
 			j -= 1
 		elif op == "substitute":
 			counts["substitutions"] += 1
+			confusions.append((gold[i - 1], predicted[j - 1]))
 			i -= 1
 			j -= 1
 		elif op == "delete":
 			counts["deletions"] += 1
+			confusions.append((gold[i - 1], MISSING))
 			i -= 1
 		elif op == "insert":
 			counts["insertions"] += 1
+			confusions.append((EXTRA, predicted[j - 1]))
 			j -= 1
 		else:
 			raise RuntimeError("invalid alignment state")
 
+	confusions.reverse()
 	gold_count = len(gold)
 	predicted_count = len(predicted)
 	edits = counts["substitutions"] + counts["insertions"] + counts["deletions"]
@@ -67,6 +75,7 @@ def align_ids(predicted, gold):
 		"gold_ids": gold_count,
 		"predicted_ids": predicted_count,
 		"edits": edits,
+		"confusions": confusions,
 		"id_match_rate": counts["matches"] / denominator if denominator else 1.0,
 		"id_error_rate": edits / gold_count if gold_count else (0.0 if predicted_count == 0 else 1.0),
 	})
@@ -88,6 +97,7 @@ def job_annotation_metrics(rows):
 		"deletions": 0,
 		"edits": 0,
 	}
+	confusions = Counter()
 	for row in rows:
 		if not row.get("gold_annotation"):
 			continue
@@ -95,7 +105,12 @@ def job_annotation_metrics(rows):
 		totals["sentences_scored"] += 1
 		for key in ("gold_ids", "predicted_ids", "matches", "substitutions", "insertions", "deletions", "edits"):
 			totals[key] += metrics[key]
+		confusions.update(metrics["confusions"])
 	denominator = max(totals["gold_ids"], totals["predicted_ids"])
 	totals["id_match_rate"] = totals["matches"] / denominator if denominator else None
 	totals["id_error_rate"] = totals["edits"] / totals["gold_ids"] if totals["gold_ids"] else None
+	totals["confusions"] = [
+		{"gold": gold, "predicted": predicted, "count": count}
+		for (gold, predicted), count in confusions.most_common()
+	]
 	return totals
