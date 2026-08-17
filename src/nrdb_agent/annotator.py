@@ -33,6 +33,33 @@ Miyako annotation conventions for annotation-v2:
 - Within the same phrase, if two elements are repeated, the second occurrence is almost certainly the reduplication marker red. Prefer red for that second repeated occurrence unless strong contrary evidence exists.
 """
 
+V3_ANNOTATION_RULES = """
+
+annotation-v3 execution rule:
+- Annotation and translation are separate phases. During this annotation phase, do not translate. Return trsl_ai as an empty string even when produce_translation is true. The validated annotation will be frozen before a separate translation phase begins.
+"""
+
+TRANSLATION_INSTRUCTIONS = """You are the constrained NRDB Japanese translation phase.
+The segmentation and morphemic annotation supplied to you have already been finalized and are FROZEN. You must not revise, reinterpret, or replace them.
+
+Goal: produce a concise, natural Japanese translation grounded in the frozen annotation and NRDB evidence.
+
+Rules:
+- Translate primarily from the validated final annotation, using the source form only as supporting context.
+- Use lookup_id only when the Japanese lexical meaning of a content ID is materially unclear. Dictionary-attested meanings outrank guesses.
+- Use corpus_examples primarily for constructional or grammatical interpretation, especially when translated human examples can show how a multi-ID construction is realized in Japanese.
+- Prefer searching an informative construction (for example A;cvb-foc or A-dat-B;cvb) over repeatedly searching obvious single grammatical IDs.
+- Do not look up every ID. Search only when evidence could materially change the translation.
+- Preserve information explicitly encoded by the analysis, including negation, tense/aspect, modality, case/argument structure, focus/topic, direction/location, quantification, and semantically relevant reduplication.
+- Produce natural Japanese rather than an interlinear gloss.
+- Do not add semantic information that is not licensed by the frozen annotation, source context, dictionary grounding, or retrieved corpus evidence.
+- When evidence is incomplete, prefer a conservative translation over an imaginative guess.
+- Do not produce chain-of-thought.
+
+Final response must be one JSON object and no surrounding prose:
+{"trsl_ai":"...","confidence":0.0,"translation_evidence":{"dictionary_ids":[],"example_sentence_ids":[],"ungrounded_ids":[],"note":"brief"}}
+"""
+
 
 def instructions_for_version(prompt_version):
 	version = str(prompt_version or "annotation-v1")
@@ -40,6 +67,8 @@ def instructions_for_version(prompt_version):
 		return BASE_INSTRUCTIONS
 	if version == "annotation-v2":
 		return BASE_INSTRUCTIONS + V2_RULES
+	if version == "annotation-v3":
+		return BASE_INSTRUCTIONS + V2_RULES + V3_ANNOTATION_RULES
 	raise ValueError("unsupported prompt_version: {}".format(version))
 
 
@@ -64,6 +93,8 @@ TOOLS = [
 	},
 ]
 
+TRANSLATION_TOOLS = TOOLS[:2]
+
 
 def parse_final_json(text):
 	text = (text or "").strip()
@@ -84,6 +115,24 @@ def parse_final_json(text):
 	payload["trsl_ai"] = str(payload.get("trsl_ai") or "").strip()
 	payload["evidence"] = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
 	return payload
+
+
+def parse_translation_json(text):
+	text = (text or "").strip()
+	if text.startswith("```"):
+		text = re.sub(r"^```(?:json)?\s*", "", text)
+		text = re.sub(r"\s*```$", "", text)
+	payload = json.loads(text)
+	translation = str(payload.get("trsl_ai") or "").strip()
+	if not translation:
+		raise ValueError("translation phase returned empty trsl_ai")
+	confidence = float(payload.get("confidence", 0.0))
+	if confidence < 0 or confidence > 1:
+		raise ValueError("translation confidence must be between 0 and 1")
+	evidence = payload.get("translation_evidence")
+	if not isinstance(evidence, dict):
+		evidence = {}
+	return {"trsl_ai": translation, "confidence": confidence, "translation_evidence": evidence}
 
 
 def _response_output_as_input(response):
@@ -180,20 +229,21 @@ def _retry_delay(error, attempt):
 
 
 class AnnotationAgent:
-	def __init__(self, nrdb, model_name, client=None, max_rounds=6, max_evidence_calls=6, progress=None):
+	def __init__(self, nrdb, model_name, client=None, max_rounds=6, max_evidence_calls=6, max_translation_evidence_calls=4, progress=None):
 		self.nrdb = nrdb
 		self.model_name = model_name
 		self.client = client or OpenAI()
 		self.max_rounds = int(max_rounds)
 		self.max_evidence_calls = int(max_evidence_calls)
+		self.max_translation_evidence_calls = int(max_translation_evidence_calls)
 		self.progress = progress or (lambda _message: None)
 
-	def _create_response(self, input_items, instructions):
+	def _create_response(self, input_items, instructions, tools=TOOLS, max_output_tokens=800):
 		for attempt in range(4):
 			try:
 				return self.client.responses.create(
 					model=self.model_name, instructions=instructions, input=input_items,
-					tools=TOOLS, store=False, max_output_tokens=800,
+					tools=tools, store=False, max_output_tokens=max_output_tokens,
 				)
 			except RateLimitError as error:
 				message = str(error)
@@ -215,8 +265,54 @@ class AnnotationAgent:
 			return self.nrdb.validate_analysis(item["text"], arguments["segmented"], arguments["annotation"])
 		raise ValueError("unknown tool: {}".format(name))
 
+	def _translate_frozen(self, item, job, result):
+		payload = {
+			"sentence_id": int(item["sentence_id"]),
+			"source_text": item["text"],
+			"existing_translation_jp": item.get("translation_jp"),
+			"frozen_segmented": result["segmented"],
+			"frozen_annotation": result["annotation"],
+			"annotation_decision": result["decision"],
+			"annotation_confidence": result["confidence"],
+			"annotation_schema_id": int(job["annotation_schema_id"]),
+		}
+		base_input = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
+		evidence_summary = []
+		evidence_calls = 0
+		self.progress("  translation: initial response (frozen annotation; budget {}/{})".format(evidence_calls, self.max_translation_evidence_calls))
+		response = self._create_response(base_input, TRANSLATION_INSTRUCTIONS, tools=TRANSLATION_TOOLS, max_output_tokens=600)
+		for round_index in range(1, self.max_rounds + 1):
+			calls = [output for output in response.output if getattr(output, "type", None) == "function_call"]
+			if not calls:
+				translation = parse_translation_json(response.output_text)
+				self.progress("  translation: final confidence={:.3f}".format(translation["confidence"]))
+				return translation
+
+			self.progress("  translation tool round {}: {} call(s)".format(round_index, len(calls)))
+			continuation = list(base_input)
+			if evidence_summary:
+				continuation.append({"role": "user", "content": "Previously retrieved compact translation evidence:\n" + json.dumps(evidence_summary[-4:], ensure_ascii=False)})
+			continuation.extend(_response_output_as_input(response))
+			for call in calls:
+				arguments = json.loads(call.arguments)
+				self.progress("    -> {}({})".format(call.name, _trace_arguments(call.name, arguments)))
+				if evidence_calls >= self.max_translation_evidence_calls:
+					compact = {"budget_exhausted": True, "message": "Translation evidence-call budget exhausted; translate conservatively from frozen analysis and existing evidence."}
+					self.progress("    <- {}: skipped (translation evidence budget exhausted)".format(call.name))
+				else:
+					tool_result = self._tool_result(call.name, arguments, item, int(job["annotation_schema_id"]))
+					compact = _compact_tool_result(call.name, tool_result)
+					self.progress("    <- {}: {}".format(call.name, _trace_result(call.name, tool_result)))
+					evidence_calls += 1
+					evidence_summary.append({"tool": call.name, "arguments": arguments, "result": compact})
+				continuation.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(compact, ensure_ascii=False)})
+			self.progress("  translation: continue after tool round {} (evidence {}/{})".format(round_index, evidence_calls, self.max_translation_evidence_calls))
+			response = self._create_response(continuation, TRANSLATION_INSTRUCTIONS, tools=TRANSLATION_TOOLS, max_output_tokens=600)
+		raise RuntimeError("translation phase exceeded maximum tool rounds")
+
 	def annotate(self, item, job, morph_result):
-		instructions = instructions_for_version(job.get("prompt_version"))
+		prompt_version = str(job.get("prompt_version") or "annotation-v1")
+		instructions = instructions_for_version(prompt_version)
 		input_payload = {
 			"sentence_id": int(item["sentence_id"]), "dialect_id": int(item["dialect_id"]),
 			"dialect_region": item.get("dialect_region"), "text": item["text"],
@@ -228,15 +324,22 @@ class AnnotationAgent:
 		base_input = [{"role": "user", "content": json.dumps(input_payload, ensure_ascii=False)}]
 		evidence_summary = []
 		evidence_calls = 0
-		self.progress("  llm: initial response ({}; {})".format(self.model_name, job.get("prompt_version") or "annotation-v1"))
+		self.progress("  llm: initial response ({}; {})".format(self.model_name, prompt_version))
 		response = self._create_response(base_input, instructions)
 		for round_index in range(1, self.max_rounds + 1):
 			calls = [output for output in response.output if getattr(output, "type", None) == "function_call"]
 			if not calls:
 				result = parse_final_json(response.output_text)
-				if not job.get("produce_translation"):
-					result["trsl_ai"] = ""
 				result["model_response_id"] = response.id
+				if prompt_version == "annotation-v3":
+					result["trsl_ai"] = ""
+					if job.get("produce_translation") and result.get("annotation") and result["decision"] != "failed":
+						translation = self._translate_frozen(item, job, result)
+						result["trsl_ai"] = translation["trsl_ai"]
+						result["evidence"]["translation"] = translation["translation_evidence"]
+						result["evidence"]["translation"]["confidence"] = translation["confidence"]
+				elif not job.get("produce_translation"):
+					result["trsl_ai"] = ""
 				self.progress("  final: decision={} confidence={:.3f}".format(result["decision"], result["confidence"]))
 				return result
 
