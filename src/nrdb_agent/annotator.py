@@ -16,12 +16,14 @@ Rules:
 - Never invent an annotation ID. Prefer IDs proposed by nrdb-morph or confirmed by lookup/corpus evidence.
 - You may change segmentation only when evidence strongly supports it.
 - Before a PROPOSED result, call validate_analysis on the complete final segmentation and annotation.
+- If produce_translation is true, also generate a concise natural Japanese translation from the final analysis and return it as trsl_ai.
+- If produce_translation is false, return trsl_ai as an empty string.
 - If evidence is insufficient, return decision UNCERTAIN. If no defensible valid analysis exists, return FAILED.
 - Do not ask for gold annotation and do not infer that it is available.
 - Do not produce chain-of-thought. Evidence should contain only concise, auditable facts.
 
 Final response must be one JSON object and no surrounding prose:
-{"segmented":"...","annotation":"...","decision":"proposed|uncertain|failed","confidence":0.0,"evidence":{"note":"brief","labels_checked":[],"example_sentence_ids":[]}}
+{"segmented":"...","annotation":"...","trsl_ai":"...","decision":"proposed|uncertain|failed","confidence":0.0,"evidence":{"note":"brief","labels_checked":[],"example_sentence_ids":[]}}
 """
 
 TOOLS = [
@@ -62,6 +64,7 @@ def parse_final_json(text):
 	payload["confidence"] = confidence
 	payload["segmented"] = str(payload.get("segmented") or "").strip()
 	payload["annotation"] = str(payload.get("annotation") or "").strip()
+	payload["trsl_ai"] = str(payload.get("trsl_ai") or "").strip()
 	payload["evidence"] = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
 	return payload
 
@@ -200,6 +203,7 @@ class AnnotationAgent:
 			"sentence_id": int(item["sentence_id"]), "dialect_id": int(item["dialect_id"]),
 			"dialect_region": item.get("dialect_region"), "text": item["text"],
 			"translation_jp": item.get("translation_jp"),
+			"produce_translation": bool(job.get("produce_translation")),
 			"annotation_schema_id": int(job["annotation_schema_id"]),
 			"nrdb_morph": _compact_morph(morph_result),
 		}
@@ -212,6 +216,8 @@ class AnnotationAgent:
 			calls = [output for output in response.output if getattr(output, "type", None) == "function_call"]
 			if not calls:
 				result = parse_final_json(response.output_text)
+				if not job.get("produce_translation"):
+					result["trsl_ai"] = ""
 				result["model_response_id"] = response.id
 				self.progress("  final: decision={} confidence={:.3f}".format(result["decision"], result["confidence"]))
 				return result
