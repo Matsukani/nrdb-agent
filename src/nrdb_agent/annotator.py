@@ -52,6 +52,15 @@ Additional Miyako annotation conventions for annotation-v5:
 - The reduplication heuristic for red is strictly phrase-local. Only repetition inside the same whitespace-delimited phrase can license red. Never use a repeated element in another phrase elsewhere in the utterance as evidence for red. Inside one phrase, when an element is immediately or clearly repeated, the second occurrence is strongly expected to be red unless strong contrary evidence exists.
 """
 
+V6_RULES = """
+
+Additional evidence conventions for annotation-v6:
+- Do not use a hard-coded surface-form exception when a form-to-ID choice can be checked empirically. For a doubtful pairing between a surface segment X and candidate annotation ID Y, use form_id_support(X, Y). This tool is automatically scoped to the current utterance's dialect region and searches aligned corpus and lexicon evidence.
+- Interpret regional form-ID evidence comparatively, not categorically. A candidate with no regional support should receive a penalty, especially when the surface itself is well attested regionally under other IDs. A supported candidate may be preferred when morphology and context are otherwise compatible. Zero support is evidence against a candidate, not an absolute prohibition.
+- Pay attention to the returned surface_total, candidate_count, candidate_rate, penalty and alternative IDs. A strong penalty means the surface is regionally well attested but the proposed ID is unattested; a weak penalty means evidence is sparse.
+- The reduplication heuristic for red is strictly phrase-local. Only repetition inside the same whitespace-delimited phrase can license red. Never use repetition across phrase boundaries as evidence for red.
+"""
+
 TRANSLATION_INSTRUCTIONS = """You are the constrained NRDB Japanese translation phase.
 The segmentation and morphemic annotation supplied to you have already been finalized and are FROZEN. You must not revise, reinterpret, or replace them.
 
@@ -112,12 +121,15 @@ def instructions_for_version(prompt_version):
 		return BASE_INSTRUCTIONS + V2_RULES + V3_ANNOTATION_RULES + V4_RULES
 	if version == "annotation-v5":
 		return BASE_INSTRUCTIONS + V2_RULES + V3_ANNOTATION_RULES + V4_RULES + V5_RULES
+	if version == "annotation-v6":
+		return BASE_INSTRUCTIONS + V2_RULES + V3_ANNOTATION_RULES + V4_RULES + V6_RULES
 	raise ValueError("unsupported prompt_version: {}".format(version))
 
 
 TOOLS = [
 	{"type": "function", "name": "lookup_id", "description": "Look up bilingual dictionary, local-schema and UniCog grounding for one existing NRDB annotation ID.", "parameters": {"type": "object", "properties": {"label": {"type": "string"}}, "required": ["label"], "additionalProperties": False}, "strict": True},
 	{"type": "function", "name": "corpus_examples", "description": "Retrieve human-validated corpus examples for an annotation expression. Expressions may be atomic IDs, conflated segments such as A;cvb, or segment sequences such as A-dat.", "parameters": {"type": "object", "properties": {"label": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8}}, "required": ["label", "limit"], "additionalProperties": False}, "strict": True},
+	{"type": "function", "name": "form_id_support", "description": "Check region-scoped aligned corpus and lexicon support for assigning one candidate annotation ID to one exact segmented surface form. Use this to penalize unattested form-ID pairings and compare regional alternatives.", "parameters": {"type": "object", "properties": {"surface": {"type": "string"}, "candidate_id": {"type": "string"}}, "required": ["surface", "candidate_id"], "additionalProperties": False}, "strict": True},
 	{"type": "function", "name": "validate_analysis", "description": "Validate that a complete segmentation and annotation are structurally aligned and legal under nrdb-morph syntax.", "parameters": {"type": "object", "properties": {"segmented": {"type": "string"}, "annotation": {"type": "string"}}, "required": ["segmented", "annotation"], "additionalProperties": False}, "strict": True},
 ]
 
@@ -210,6 +222,13 @@ def _compact_tool_result(name, result):
 	if name == "corpus_examples":
 		examples = [{"sentence_id": example.get("sentence_id"), "text": _clip(example.get("text"), 180), "annotation": _clip(example.get("annotation"), 280), "translation_jp": _clip(example.get("translation_jp"), 180)} for example in result.get("examples", [])[:6]]
 		return {"label": result.get("label"), "examples": examples}
+	if name == "form_id_support":
+		return {
+			"surface": result.get("surface"), "candidate_id": result.get("candidate_id"), "region": result.get("region"),
+			"combined": result.get("combined"),
+			"corpus": {"surface_total": result.get("corpus", {}).get("surface_total"), "candidate_count": result.get("corpus", {}).get("candidate_count"), "alternatives": result.get("corpus", {}).get("alternatives", [])[:8]},
+			"lexicon": {"surface_total": result.get("lexicon", {}).get("surface_total"), "candidate_count": result.get("lexicon", {}).get("candidate_count"), "alternatives": result.get("lexicon", {}).get("alternatives", [])[:8]},
+		}
 	if name == "validate_analysis":
 		return {"valid": bool(result.get("valid")), "error": result.get("error")}
 	return result
@@ -220,6 +239,8 @@ def _trace_arguments(name, arguments):
 		return "label={}".format(arguments.get("label", ""))
 	if name == "corpus_examples":
 		return "label={} limit={}".format(arguments.get("label", ""), arguments.get("limit", ""))
+	if name == "form_id_support":
+		return "surface={!r} candidate_id={}".format(arguments.get("surface", ""), arguments.get("candidate_id", ""))
 	if name == "validate_analysis":
 		return "segmented={!r} annotation={!r}".format(str(arguments.get("segmented", "")), str(arguments.get("annotation", "")))
 	return ""
@@ -230,6 +251,9 @@ def _trace_result(name, result):
 		return "lexical_entries={} local={} global={}".format(len(result.get("lexical_entries", [])), "yes" if result.get("local") else "no", "yes" if result.get("global") else "no")
 	if name == "corpus_examples":
 		return "examples={}".format(len(result.get("examples", [])))
+	if name == "form_id_support":
+		combined = result.get("combined", {})
+		return "region={} support={}/{} penalty={}".format(result.get("region", ""), combined.get("candidate_count", 0), combined.get("surface_total", 0), combined.get("penalty", "none"))
 	if name == "validate_analysis":
 		return "valid={}".format(bool(result.get("valid")))
 	return "ok"
@@ -276,6 +300,11 @@ class AnnotationAgent:
 			return self.nrdb.lookup_id(arguments["label"], schema_id)
 		if name == "corpus_examples":
 			return self.nrdb.examples(arguments["label"], schema_id, item["sentence_id"], min(8, arguments["limit"]))
+		if name == "form_id_support":
+			region = str(item.get("dialect_region") or "").strip()
+			if not region:
+				return {"success": True, "surface": arguments["surface"], "candidate_id": arguments["candidate_id"], "region": None, "combined": {"surface_total": 0, "candidate_count": 0, "candidate_rate": None, "penalty": "none"}, "corpus": {}, "lexicon": {}, "note": "No dialect region available; no penalty applied."}
+			return self.nrdb.form_id_support(arguments["surface"], arguments["candidate_id"], region, schema_id)
 		if name == "validate_analysis":
 			return self.nrdb.validate_analysis(item["text"], arguments["segmented"], arguments["annotation"])
 		raise ValueError("unknown tool: {}".format(name))
@@ -364,7 +393,7 @@ class AnnotationAgent:
 			if not calls:
 				result = parse_final_json(response.output_text)
 				result["model_response_id"] = response.id
-				if prompt_version in {"annotation-v3", "annotation-v4", "annotation-v5"}:
+				if prompt_version in {"annotation-v3", "annotation-v4", "annotation-v5", "annotation-v6"}:
 					result["trsl_ai"] = ""
 					if job.get("produce_translation") and result.get("annotation") and result["decision"] != "failed":
 						translation = self._translate_frozen(item, job, result)
