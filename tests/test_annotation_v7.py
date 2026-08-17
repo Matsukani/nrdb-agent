@@ -1,3 +1,5 @@
+import pytest
+
 from nrdb_agent.annotator_v7 import AnnotationAgentV7, V7_TRANSLATION_INSTRUCTIONS
 
 
@@ -36,3 +38,12 @@ def test_v7_batch_grounding_uses_dictionary_meanings():
 	assert result["labels"][0]["lexical_entries"][0]["meaning_jp"] == "井戸"
 	assert result["labels"][1]["lexical_entries"][0]["meaning_jp"] == "家"
 	assert result["labels"][2]["grounded"] is False
+
+
+def test_v7_finalization_requires_dictionary_grounding():
+	agent = AnnotationAgentV7(FakeNrdb(), "test-model", client=object())
+	assert agent._has_dictionary_grounding([]) is False
+	assert agent._has_dictionary_grounding([{"tool": "corpus_examples"}]) is False
+	assert agent._has_dictionary_grounding([{"tool": "ground_lexical_ids"}]) is True
+	with pytest.raises(RuntimeError, match="cannot finalize without dictionary grounding"):
+		agent._finalize_translation_v7([], [], "test")
