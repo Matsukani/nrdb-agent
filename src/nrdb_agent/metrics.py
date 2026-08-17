@@ -5,11 +5,15 @@ from collections import Counter
 ID_SPLIT_RE = re.compile(r"[\s\u3000\-;]+")
 MISSING = "<missing>"
 EXTRA = "<extra>"
+IGNORED_CONTROL_IDS = {"r"}
 
 
 def annotation_ids(annotation):
-	"""Flatten an NRDB annotation into its ordered atomic ID labels."""
-	return [value for value in ID_SPLIT_RE.split(str(annotation or "").strip()) if value]
+	"""Flatten an NRDB annotation into ordered linguistic IDs, excluding non-evaluative controls."""
+	return [
+		value for value in ID_SPLIT_RE.split(str(annotation or "").strip())
+		if value and value not in IGNORED_CONTROL_IDS
+	]
 
 
 def align_ids(predicted, gold):
