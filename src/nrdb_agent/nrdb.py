@@ -56,6 +56,18 @@ class NrdbClient:
 		return self._evidence_get("lookup_id", label=label, annotation_schema_id=int(annotation_schema_id))
 
 	def examples(self, label, annotation_schema_id, exclude_sentence_id, limit=12):
+		label = str(label or "").strip()
+		segment_count = len(label.split("-")) if label else 0
+		if len(label) > 256 or segment_count > 8:
+			reason = "corpus_examples query rejected locally: use a shorter construction with at most 8 hyphen-separated segments and at most 256 characters"
+			return {
+				"success": True,
+				"label": "{} [QUERY_REJECTED: {}]".format(label[:160], reason),
+				"examples": [],
+				"query_rejected": True,
+				"error": reason,
+				"segment_count": segment_count,
+			}
 		return self._evidence_get(
 			"examples", label=label, annotation_schema_id=int(annotation_schema_id),
 			exclude_sentence_id=int(exclude_sentence_id), limit=int(limit),
