@@ -107,7 +107,12 @@ class AnnotationAgentV7(AnnotationAgent):
 			return "grounded={}/{}".format(sum(1 for value in labels if value.get("grounded")), len(labels))
 		return _trace_result(name, result)
 
+	def _has_dictionary_grounding(self, evidence_summary):
+		return any(entry.get("tool") == "ground_lexical_ids" for entry in evidence_summary)
+
 	def _finalize_translation_v7(self, base_input, evidence_summary, reason="evidence complete"):
+		if not self._has_dictionary_grounding(evidence_summary):
+			raise RuntimeError("translation-v7 cannot finalize without dictionary grounding")
 		final_input = list(base_input)
 		if evidence_summary:
 			final_input.append({"role": "user", "content": "Retrieved compact translation evidence:\n" + json.dumps(evidence_summary[-4:], ensure_ascii=False)})
@@ -148,6 +153,13 @@ class AnnotationAgentV7(AnnotationAgent):
 		for round_index in range(1, self.max_rounds + 1):
 			calls = [output for output in response.output if getattr(output, "type", None) == "function_call"]
 			if not calls:
+				if not self._has_dictionary_grounding(evidence_summary):
+					self.progress("  translation-v7: dictionary grounding required before finalization")
+					response = self._create_response(
+						base_input + [{"role": "user", "content": "You must call ground_lexical_ids for the lexical/content IDs before translating. Do not infer lexical semantics from ID spelling."}],
+						V7_TRANSLATION_INSTRUCTIONS, tools=tools, max_output_tokens=900,
+					)
+					continue
 				incomplete_reason = _response_incomplete_reason(response)
 				if incomplete_reason:
 					return self._finalize_translation_v7(base_input, evidence_summary, "previous response incomplete: {}".format(incomplete_reason))
@@ -166,7 +178,10 @@ class AnnotationAgentV7(AnnotationAgent):
 			for call in calls:
 				arguments = json.loads(call.arguments)
 				self.progress("    -> {}({})".format(call.name, self._v7_trace_arguments(call.name, arguments)))
-				if evidence_calls >= self.max_translation_evidence_calls:
+				if call.name == "corpus_examples" and not self._has_dictionary_grounding(evidence_summary):
+					compact = {"grounding_required": True, "message": "Ground lexical/content IDs with ground_lexical_ids before corpus construction search."}
+					self.progress("    <- corpus_examples: skipped (dictionary grounding required first)")
+				elif evidence_calls >= self.max_translation_evidence_calls:
 					compact = {"budget_exhausted": True, "message": "Translation evidence-call budget exhausted; translate conservatively from dictionary grounding and existing evidence."}
 					self.progress("    <- {}: skipped (translation evidence budget exhausted)".format(call.name))
 				else:
