@@ -28,11 +28,14 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 				sentence_id=item["sentence_id"],
 				segmented=result["segmented"],
 				annotation=result["annotation"],
+				trsl_ai=result.get("trsl_ai", "") if job.get("produce_translation") else "",
 				decision=result["decision"],
 				confidence=result["confidence"],
 				evidence=result["evidence"],
 				model_response_id=result.get("model_response_id"),
 			)
+			if job.get("produce_translation"):
+				progress("  translation: {!r}".format(result.get("trsl_ai", "")))
 			progress("  done")
 			completed += 1
 		if max_items is None or completed >= len(bundle["items"]):
