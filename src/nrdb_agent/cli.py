@@ -9,6 +9,31 @@ def _print_json(value):
 	print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
+def _print_results(payload):
+	job = payload["job"]
+	print("job {} | dataset {} ({}) | status {} | model {}".format(
+		job["id"], job["dataset_id"], job.get("dataset_name", ""), job.get("status", ""), job.get("model_name", "")
+	))
+	print("=" * 80)
+	for index, row in enumerate(payload.get("results", []), start=1):
+		print("[{}] sentence {}{}".format(index, row["sentence_id"], " / " + str(row["example_id"]) if row.get("example_id") else ""))
+		print("source:      {}".format(row.get("source_text") or ""))
+		print("segmented:   {}".format(row.get("ai_segmented") or ""))
+		print("annotation:  {}".format(row.get("ai_annotation") or ""))
+		if row.get("trsl_ai"):
+			print("translation: {}".format(row["trsl_ai"]))
+		if row.get("gold_translation_jp"):
+			print("gold trsl:   {}".format(row["gold_translation_jp"]))
+		elif row.get("translation_jp"):
+			print("human trsl:  {}".format(row["translation_jp"]))
+		if row.get("gold_annotation"):
+			print("gold ann:    {}".format(row["gold_annotation"]))
+		print("decision:    {} | confidence: {} | exact: {}".format(
+			row.get("decision") or "", row.get("confidence") or "", row.get("exact_match") if row.get("exact_match") is not None else "n/a"
+		))
+		print("-" * 80)
+
+
 def main():
 	parser = argparse.ArgumentParser(description="Run constrained NRDB AI annotation jobs")
 	parser.add_argument("--agent-url", default=None)
@@ -34,6 +59,9 @@ def main():
 	show = sub.add_parser("show", help="Show audit summary for one job")
 	show.add_argument("job_id", type=int)
 
+	results = sub.add_parser("results", help="Show stored sentence-level results for one job")
+	results.add_argument("job_id", type=int)
+
 	args = parser.parse_args()
 	nrdb = NrdbClient(args.agent_url, args.morph_url)
 	if args.command == "create":
@@ -47,6 +75,8 @@ def main():
 		_print_json(run_job(nrdb, args.job_id, max_items=args.max_items))
 	elif args.command == "show":
 		_print_json(nrdb.summary(args.job_id))
+	elif args.command == "results":
+		_print_results(nrdb.job_results(args.job_id))
 	return 0
 
 
