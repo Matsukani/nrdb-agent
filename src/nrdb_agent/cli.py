@@ -22,6 +22,7 @@ def main():
 	create.add_argument("--seed", type=int, default=1)
 	create.add_argument("--model", default="gpt-5.6")
 	create.add_argument("--prompt-version", default="annotation-v1")
+	create.add_argument("--translate", action="store_true", help="Also generate a Japanese translation and store it as trsl_ai")
 
 	sub.add_parser("list", help="List recent jobs")
 
@@ -35,7 +36,7 @@ def main():
 	args = parser.parse_args()
 	nrdb = NrdbClient(args.agent_url, args.morph_url)
 	if args.command == "create":
-		_print_json(nrdb.create_job(args.dataset_id, args.mode, args.limit, args.model, args.prompt_version, args.seed))
+		_print_json(nrdb.create_job(args.dataset_id, args.mode, args.limit, args.model, args.prompt_version, args.seed, args.translate))
 	elif args.command == "list":
 		_print_json(nrdb.jobs())
 	elif args.command == "run":
