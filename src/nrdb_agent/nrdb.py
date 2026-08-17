@@ -6,6 +6,7 @@ from .http import JsonHttpClient
 class NrdbClient:
 	def __init__(self, agent_url=None, morph_url=None, timeout=60):
 		self.agent_url = (agent_url or os.environ.get("NRDB_AGENT_URL") or "http://127.0.0.1/php/agent.php").rstrip("/")
+		self.evidence_url = os.environ.get("NRDB_AGENT_EVIDENCE_URL") or self.agent_url.rsplit("/", 1)[0] + "/agent_evidence.php"
 		self.morph_url = (morph_url or os.environ.get("NRDB_MORPH_URL") or "http://127.0.0.1:8765").rstrip("/")
 		self.http = JsonHttpClient(timeout=timeout)
 
@@ -13,6 +14,12 @@ class NrdbClient:
 		payload = self.http.get(self.agent_url, {"action": action, **params})
 		if not payload.get("success"):
 			raise RuntimeError(payload.get("error") or "NRDB agent API failed")
+		return payload
+
+	def _evidence_get(self, action, **params):
+		payload = self.http.get(self.evidence_url, {"action": action, **params})
+		if not payload.get("success"):
+			raise RuntimeError(payload.get("error") or "NRDB agent evidence API failed")
 		return payload
 
 	def _agent_post(self, action, payload):
@@ -37,10 +44,10 @@ class NrdbClient:
 		return self._agent_get("job_items", job_id=int(job_id))
 
 	def lookup_id(self, label, annotation_schema_id):
-		return self._agent_get("lookup_id", label=label, annotation_schema_id=int(annotation_schema_id))
+		return self._evidence_get("lookup_id", label=label, annotation_schema_id=int(annotation_schema_id))
 
 	def examples(self, label, annotation_schema_id, exclude_sentence_id, limit=12):
-		return self._agent_get(
+		return self._evidence_get(
 			"examples", label=label, annotation_schema_id=int(annotation_schema_id),
 			exclude_sentence_id=int(exclude_sentence_id), limit=int(limit),
 		)
