@@ -91,6 +91,88 @@ def annotation_metrics(predicted_annotation, gold_annotation):
 	return align_ids(annotation_ids(predicted_annotation), annotation_ids(gold_annotation))
 
 
+def _segmentation_signature(segmented):
+	"""Return unsegmented surface and hyphen-boundary offsets, ignoring whitespace differences."""
+	text = str(segmented or "").strip()
+	surface = []
+	boundaries = set()
+	offset = 0
+	for char in text:
+		if char == "-":
+			if offset > 0:
+				boundaries.add(offset)
+			continue
+		if char.isspace() or char == "\u3000":
+			continue
+		surface.append(char)
+		offset += 1
+	return "".join(surface), boundaries
+
+
+def segmentation_metrics(predicted_segmented, gold_segmented):
+	"""Score morpheme boundaries by character offset in the unsegmented transcription."""
+	predicted_surface, predicted_boundaries = _segmentation_signature(predicted_segmented)
+	gold_surface, gold_boundaries = _segmentation_signature(gold_segmented)
+	surface_match = predicted_surface == gold_surface
+	if surface_match:
+		correct = len(predicted_boundaries & gold_boundaries)
+		false_positive = len(predicted_boundaries - gold_boundaries)
+		false_negative = len(gold_boundaries - predicted_boundaries)
+	else:
+		# A surface mismatch means offsets are not comparable. Count all boundaries as errors.
+		correct = 0
+		false_positive = len(predicted_boundaries)
+		false_negative = len(gold_boundaries)
+	precision = correct / (correct + false_positive) if (correct + false_positive) else (1.0 if not gold_boundaries else 0.0)
+	recall = correct / (correct + false_negative) if (correct + false_negative) else 1.0
+	f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+	return {
+		"surface_match": surface_match,
+		"exact": surface_match and predicted_boundaries == gold_boundaries,
+		"gold_boundaries": len(gold_boundaries),
+		"predicted_boundaries": len(predicted_boundaries),
+		"correct_boundaries": correct,
+		"false_positive_boundaries": false_positive,
+		"false_negative_boundaries": false_negative,
+		"boundary_precision": precision,
+		"boundary_recall": recall,
+		"boundary_f1": f1,
+	}
+
+
+def job_segmentation_metrics(rows):
+	totals = {
+		"sentences_scored": 0,
+		"exact_matches": 0,
+		"surface_mismatches": 0,
+		"gold_boundaries": 0,
+		"predicted_boundaries": 0,
+		"correct_boundaries": 0,
+		"false_positive_boundaries": 0,
+		"false_negative_boundaries": 0,
+	}
+	for row in rows:
+		if not row.get("gold_segmented"):
+			continue
+		metrics = segmentation_metrics(row.get("ai_segmented"), row.get("gold_segmented"))
+		totals["sentences_scored"] += 1
+		if metrics["exact"]:
+			totals["exact_matches"] += 1
+		if not metrics["surface_match"]:
+			totals["surface_mismatches"] += 1
+		for key in ("gold_boundaries", "predicted_boundaries", "correct_boundaries", "false_positive_boundaries", "false_negative_boundaries"):
+			totals[key] += metrics[key]
+	precision_denominator = totals["correct_boundaries"] + totals["false_positive_boundaries"]
+	recall_denominator = totals["correct_boundaries"] + totals["false_negative_boundaries"]
+	totals["exact_accuracy"] = totals["exact_matches"] / totals["sentences_scored"] if totals["sentences_scored"] else None
+	totals["boundary_precision"] = totals["correct_boundaries"] / precision_denominator if precision_denominator else None
+	totals["boundary_recall"] = totals["correct_boundaries"] / recall_denominator if recall_denominator else None
+	precision = totals["boundary_precision"]
+	recall = totals["boundary_recall"]
+	totals["boundary_f1"] = 2 * precision * recall / (precision + recall) if precision is not None and recall is not None and (precision + recall) else None
+	return totals
+
+
 def job_annotation_metrics(rows):
 	totals = {
 		"sentences_scored": 0,
