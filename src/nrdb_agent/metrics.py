@@ -79,6 +79,7 @@ def align_ids(predicted, gold):
 		"gold_ids": gold_count,
 		"predicted_ids": predicted_count,
 		"edits": edits,
+		"linguistic_exact": edits == 0,
 		"confusions": confusions,
 		"id_match_rate": counts["matches"] / denominator if denominator else 1.0,
 		"id_error_rate": edits / gold_count if gold_count else (0.0 if predicted_count == 0 else 1.0),
@@ -93,6 +94,7 @@ def annotation_metrics(predicted_annotation, gold_annotation):
 def job_annotation_metrics(rows):
 	totals = {
 		"sentences_scored": 0,
+		"linguistic_exact_matches": 0,
 		"gold_ids": 0,
 		"predicted_ids": 0,
 		"matches": 0,
@@ -107,10 +109,13 @@ def job_annotation_metrics(rows):
 			continue
 		metrics = annotation_metrics(row.get("ai_annotation"), row.get("gold_annotation"))
 		totals["sentences_scored"] += 1
+		if metrics["linguistic_exact"]:
+			totals["linguistic_exact_matches"] += 1
 		for key in ("gold_ids", "predicted_ids", "matches", "substitutions", "insertions", "deletions", "edits"):
 			totals[key] += metrics[key]
 		confusions.update(metrics["confusions"])
 	denominator = max(totals["gold_ids"], totals["predicted_ids"])
+	totals["linguistic_exact_accuracy"] = totals["linguistic_exact_matches"] / totals["sentences_scored"] if totals["sentences_scored"] else None
 	totals["id_match_rate"] = totals["matches"] / denominator if denominator else None
 	totals["id_error_rate"] = totals["edits"] / totals["gold_ids"] if totals["gold_ids"] else None
 	totals["confusions"] = [
