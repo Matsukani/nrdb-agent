@@ -67,14 +67,26 @@ class NrdbClient:
 			"segmentation_mode": "joint",
 			"segmentation_top_k": 5,
 		})
+		if payload.get("http_status", 200) >= 500:
+			raise RuntimeError(payload.get("error") or "nrdb-morph analyze failed")
 		if "error" in payload:
 			raise RuntimeError(payload["error"])
 		return payload
 
 	def validate_analysis(self, text, segmented, annotation):
-		return self.http.post(self.morph_url + "/validate-analysis", {
+		payload = self.http.post(self.morph_url + "/validate-analysis", {
 			"text": text, "segmented": segmented, "annotation": annotation,
 		})
+		status = int(payload.get("http_status", 200))
+		if status >= 500:
+			raise RuntimeError(payload.get("error") or "nrdb-morph validation failed")
+		if status >= 400:
+			return {
+				"valid": False,
+				"error": payload.get("error") or "analysis rejected by nrdb-morph",
+				"http_status": status,
+			}
+		return payload
 
 	def save_result(self, **payload):
 		return self._agent_post("save_result", payload)
