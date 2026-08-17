@@ -39,6 +39,12 @@ annotation-v3 execution rule:
 - Annotation and translation are separate phases. During this annotation phase, do not translate. Return trsl_ai as an empty string even when produce_translation is true. The validated annotation will be frozen before a separate translation phase begins.
 """
 
+V4_RULES = """
+
+Additional Miyako annotation convention for annotation-v4:
+- afn may only follow an adjectival expression. Do not analyze a form as afn after a non-adjectival expression; in that environment choose another supported candidate such as ng:nu when the morphology and corpus evidence support it.
+"""
+
 TRANSLATION_INSTRUCTIONS = """You are the constrained NRDB Japanese translation phase.
 The segmentation and morphemic annotation supplied to you have already been finalized and are FROZEN. You must not revise, reinterpret, or replace them.
 
@@ -69,6 +75,8 @@ def instructions_for_version(prompt_version):
 		return BASE_INSTRUCTIONS + V2_RULES
 	if version == "annotation-v3":
 		return BASE_INSTRUCTIONS + V2_RULES + V3_ANNOTATION_RULES
+	if version == "annotation-v4":
+		return BASE_INSTRUCTIONS + V2_RULES + V3_ANNOTATION_RULES + V4_RULES
 	raise ValueError("unsupported prompt_version: {}".format(version))
 
 
@@ -331,7 +339,7 @@ class AnnotationAgent:
 			if not calls:
 				result = parse_final_json(response.output_text)
 				result["model_response_id"] = response.id
-				if prompt_version == "annotation-v3":
+				if prompt_version in {"annotation-v3", "annotation-v4"}:
 					result["trsl_ai"] = ""
 					if job.get("produce_translation") and result.get("annotation") and result["decision"] != "failed":
 						translation = self._translate_frozen(item, job, result)
