@@ -22,6 +22,7 @@ Goal: produce a concise, natural Japanese translation grounded in the frozen ann
 
 Rules:
 - Before translating, ground the lexical/content IDs that contribute referential or predicate meaning with ground_lexical_ids. Batch several IDs in one call. Dictionary meaning_jp/explanation_jp outrank any apparent meaning suggested by the ID label itself.
+- ground_lexical_ids accepts exact atomic NRDB annotation IDs only. Never put commentary, questions, guessed decompositions, full phrases, or explanatory text inside the labels array.
 - You do not need to ground obvious purely grammatical atoms such as tense, negation, case, topic/focus, or converbal markers unless their contribution is genuinely unclear.
 - If a content ID has no usable dictionary grounding, record it in ungrounded_ids and translate conservatively from other evidence. Do not guess from the ID's kanji/string.
 - Use corpus_examples primarily for constructional or grammatical interpretation and for contextual disambiguation after lexical grounding. Corpus evidence may help choose among dictionary-attested senses, but should not replace dictionary grounding with an inference from the ID spelling.
@@ -40,13 +41,13 @@ Final response must be one JSON object and no surrounding prose:
 GROUND_LEXICAL_IDS_TOOL = {
 	"type": "function",
 	"name": "ground_lexical_ids",
-	"description": "Batch-ground lexical/content NRDB annotation IDs in the bilingual dictionary. Use this before translation. Treat returned dictionary meanings as authoritative over the visual spelling of the ID label.",
+	"description": "Batch-ground exact atomic lexical/content NRDB annotation IDs in the bilingual dictionary. Each labels item must be one existing annotation ID only: no commentary, questions, phrases, or explanatory text. Invalid items are returned as rejected evidence rather than aborting the tool call.",
 	"parameters": {
 		"type": "object",
 		"properties": {
 			"labels": {
 				"type": "array",
-				"items": {"type": "string"},
+				"items": {"type": "string", "maxLength": 128},
 				"minItems": 1,
 				"maxItems": 12,
 			}
@@ -61,8 +62,32 @@ GROUND_LEXICAL_IDS_TOOL = {
 class AnnotationAgentV7(AnnotationAgent):
 	def _ground_lexical_ids(self, labels, schema_id):
 		grounded = []
-		for label in labels[:12]:
-			result = self.nrdb.lookup_id(label, schema_id)
+		for raw_label in labels[:12]:
+			label = str(raw_label or "").strip()
+			if not label or len(label) > 128 or any(char.isspace() for char in label):
+				grounded.append({
+					"label": label,
+					"lexical_entries": [],
+					"local": None,
+					"global": None,
+					"grounded": False,
+					"rejected": True,
+					"error": "Invalid lexical-grounding label; use one exact atomic NRDB annotation ID only.",
+				})
+				continue
+			try:
+				result = self.nrdb.lookup_id(label, schema_id)
+			except RuntimeError as error:
+				grounded.append({
+					"label": label,
+					"lexical_entries": [],
+					"local": None,
+					"global": None,
+					"grounded": False,
+					"rejected": True,
+					"error": str(error),
+				})
+				continue
 			compact = _compact_tool_result("lookup_id", result)
 			grounded.append({
 				"label": label,
@@ -70,6 +95,7 @@ class AnnotationAgentV7(AnnotationAgent):
 				"local": compact.get("local"),
 				"global": compact.get("global"),
 				"grounded": bool(compact.get("lexical_entries")),
+				"rejected": False,
 			})
 		return {"labels": grounded}
 
@@ -104,7 +130,11 @@ class AnnotationAgentV7(AnnotationAgent):
 	def _v7_trace_result(self, name, result):
 		if name == "ground_lexical_ids":
 			labels = result.get("labels", [])
-			return "grounded={}/{}".format(sum(1 for value in labels if value.get("grounded")), len(labels))
+			return "grounded={}/{} rejected={}".format(
+				sum(1 for value in labels if value.get("grounded")),
+				len(labels),
+				sum(1 for value in labels if value.get("rejected")),
+			)
 		return _trace_result(name, result)
 
 	def _has_dictionary_grounding(self, evidence_summary):
