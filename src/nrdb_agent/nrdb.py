@@ -6,8 +6,10 @@ from .http import JsonHttpClient
 class NrdbClient:
 	def __init__(self, agent_url=None, morph_url=None, timeout=60):
 		self.agent_url = (agent_url or os.environ.get("NRDB_AGENT_URL") or "http://127.0.0.1/php/agent.php").rstrip("/")
-		self.evidence_url = os.environ.get("NRDB_AGENT_EVIDENCE_URL") or self.agent_url.rsplit("/", 1)[0] + "/agent_evidence.php"
-		self.results_url = os.environ.get("NRDB_AGENT_RESULTS_URL") or self.agent_url.rsplit("/", 1)[0] + "/agent_results.php"
+		base_url = self.agent_url.rsplit("/", 1)[0]
+		self.evidence_url = os.environ.get("NRDB_AGENT_EVIDENCE_URL") or base_url + "/agent_evidence.php"
+		self.results_url = os.environ.get("NRDB_AGENT_RESULTS_URL") or base_url + "/agent_results.php"
+		self.form_support_url = os.environ.get("NRDB_AGENT_FORM_SUPPORT_URL") or base_url + "/agent_form_support.php"
 		self.morph_url = (morph_url or os.environ.get("NRDB_MORPH_URL") or "http://127.0.0.1:8765").rstrip("/")
 		self.http = JsonHttpClient(timeout=timeout)
 
@@ -59,6 +61,17 @@ class NrdbClient:
 			exclude_sentence_id=int(exclude_sentence_id), limit=int(limit),
 		)
 
+	def form_id_support(self, surface, candidate_id, region, annotation_schema_id):
+		payload = self.http.get(self.form_support_url, {
+			"surface": surface,
+			"candidate_id": candidate_id,
+			"region": region,
+			"annotation_schema_id": int(annotation_schema_id),
+		})
+		if not payload.get("success"):
+			raise RuntimeError(payload.get("error") or "NRDB form-ID support API failed")
+		return payload
+
 	def morph_analyze(self, text, dialect_id, annotation_schema_id):
 		payload = self.http.post(self.morph_url + "/analyze", {
 			"text": text,
@@ -81,11 +94,7 @@ class NrdbClient:
 		if status >= 500:
 			raise RuntimeError(payload.get("error") or "nrdb-morph validation failed")
 		if status >= 400:
-			return {
-				"valid": False,
-				"error": payload.get("error") or "analysis rejected by nrdb-morph",
-				"http_status": status,
-			}
+			return {"valid": False, "error": payload.get("error") or "analysis rejected by nrdb-morph", "http_status": status}
 		return payload
 
 	def save_result(self, **payload):
