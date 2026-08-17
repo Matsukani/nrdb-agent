@@ -66,6 +66,32 @@ Final response must be one JSON object and no surrounding prose:
 {"trsl_ai":"...","confidence":0.0,"translation_evidence":{"dictionary_ids":[],"example_sentence_ids":[],"ungrounded_ids":[],"note":"brief"}}
 """
 
+TRANSLATION_FORMAT = {
+	"type": "json_schema",
+	"name": "nrdb_translation",
+	"strict": True,
+	"schema": {
+		"type": "object",
+		"properties": {
+			"trsl_ai": {"type": "string"},
+			"confidence": {"type": "number"},
+			"translation_evidence": {
+				"type": "object",
+				"properties": {
+					"dictionary_ids": {"type": "array", "items": {"type": "string"}},
+					"example_sentence_ids": {"type": "array", "items": {"type": "integer"}},
+					"ungrounded_ids": {"type": "array", "items": {"type": "string"}},
+					"note": {"type": "string"},
+				},
+				"required": ["dictionary_ids", "example_sentence_ids", "ungrounded_ids", "note"],
+				"additionalProperties": False,
+			},
+		},
+		"required": ["trsl_ai", "confidence", "translation_evidence"],
+		"additionalProperties": False,
+	},
+}
+
 
 def instructions_for_version(prompt_version):
 	version = str(prompt_version or "annotation-v1")
@@ -81,24 +107,9 @@ def instructions_for_version(prompt_version):
 
 
 TOOLS = [
-	{
-		"type": "function", "name": "lookup_id",
-		"description": "Look up bilingual dictionary, local-schema and UniCog grounding for one existing NRDB annotation ID.",
-		"parameters": {"type": "object", "properties": {"label": {"type": "string"}}, "required": ["label"], "additionalProperties": False},
-		"strict": True,
-	},
-	{
-		"type": "function", "name": "corpus_examples",
-		"description": "Retrieve human-validated corpus examples for an annotation expression. Expressions may be atomic IDs, conflated segments such as A;cvb, or segment sequences such as A-dat.",
-		"parameters": {"type": "object", "properties": {"label": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8}}, "required": ["label", "limit"], "additionalProperties": False},
-		"strict": True,
-	},
-	{
-		"type": "function", "name": "validate_analysis",
-		"description": "Validate that a complete segmentation and annotation are structurally aligned and legal under nrdb-morph syntax.",
-		"parameters": {"type": "object", "properties": {"segmented": {"type": "string"}, "annotation": {"type": "string"}}, "required": ["segmented", "annotation"], "additionalProperties": False},
-		"strict": True,
-	},
+	{"type": "function", "name": "lookup_id", "description": "Look up bilingual dictionary, local-schema and UniCog grounding for one existing NRDB annotation ID.", "parameters": {"type": "object", "properties": {"label": {"type": "string"}}, "required": ["label"], "additionalProperties": False}, "strict": True},
+	{"type": "function", "name": "corpus_examples", "description": "Retrieve human-validated corpus examples for an annotation expression. Expressions may be atomic IDs, conflated segments such as A;cvb, or segment sequences such as A-dat.", "parameters": {"type": "object", "properties": {"label": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8}}, "required": ["label", "limit"], "additionalProperties": False}, "strict": True},
+	{"type": "function", "name": "validate_analysis", "description": "Validate that a complete segmentation and annotation are structurally aligned and legal under nrdb-morph syntax.", "parameters": {"type": "object", "properties": {"segmented": {"type": "string"}, "annotation": {"type": "string"}}, "required": ["segmented", "annotation"], "additionalProperties": False}, "strict": True},
 ]
 
 TRANSLATION_TOOLS = TOOLS[:2]
@@ -155,26 +166,24 @@ def _response_output_as_input(response):
 	return items
 
 
+def _response_incomplete_reason(response):
+	if getattr(response, "status", None) != "incomplete":
+		return None
+	details = getattr(response, "incomplete_details", None)
+	if hasattr(details, "reason"):
+		return details.reason
+	if isinstance(details, dict):
+		return details.get("reason")
+	return "unknown"
+
+
 def _compact_morph(result):
-	compact = {
-		"segmented": result.get("segmented"),
-		"annotation": result.get("annotation"),
-		"confidence": result.get("confidence"),
-		"mode": result.get("mode"),
-	}
+	compact = {"segmented": result.get("segmented"), "annotation": result.get("annotation"), "confidence": result.get("confidence"), "mode": result.get("mode")}
 	phrases = []
 	for phrase in result.get("phrases", [])[:20]:
 		segments = []
 		for segment in phrase.get("segments", [])[:30]:
-			segments.append({
-				"surface": segment.get("surface"),
-				"label": segment.get("label"),
-				"confidence": segment.get("confidence", segment.get("raw_confidence")),
-				"alternatives": [
-					{"label": alt.get("label"), "support": alt.get("support")}
-					for alt in segment.get("alternatives", [])[:3]
-				],
-			})
+			segments.append({"surface": segment.get("surface"), "label": segment.get("label"), "confidence": segment.get("confidence", segment.get("raw_confidence")), "alternatives": [{"label": alt.get("label"), "support": alt.get("support")} for alt in segment.get("alternatives", [])[:3]]})
 		phrases.append({"raw": phrase.get("raw"), "segments": segments})
 	compact["phrases"] = phrases
 	return compact
@@ -187,21 +196,10 @@ def _clip(value, length=240):
 
 def _compact_tool_result(name, result):
 	if name == "lookup_id":
-		entries = []
-		for entry in result.get("lexical_entries", [])[:6]:
-			entries.append({
-				"form1": entry.get("form1"), "form2": entry.get("form2"),
-				"meaning_jp": _clip(entry.get("meaning_jp")), "pos": entry.get("pos"),
-				"dialect_name": entry.get("dialect_name"),
-			})
+		entries = [{"form1": entry.get("form1"), "form2": entry.get("form2"), "meaning_jp": _clip(entry.get("meaning_jp")), "pos": entry.get("pos"), "dialect_name": entry.get("dialect_name")} for entry in result.get("lexical_entries", [])[:6]]
 		return {"label": result.get("label"), "lexical_entries": entries, "local": result.get("local"), "global": result.get("global")}
 	if name == "corpus_examples":
-		examples = []
-		for example in result.get("examples", [])[:6]:
-			examples.append({
-				"sentence_id": example.get("sentence_id"), "text": _clip(example.get("text"), 180),
-				"annotation": _clip(example.get("annotation"), 280), "translation_jp": _clip(example.get("translation_jp"), 180),
-			})
+		examples = [{"sentence_id": example.get("sentence_id"), "text": _clip(example.get("text"), 180), "annotation": _clip(example.get("annotation"), 280), "translation_jp": _clip(example.get("translation_jp"), 180)} for example in result.get("examples", [])[:6]]
 		return {"label": result.get("label"), "examples": examples}
 	if name == "validate_analysis":
 		return {"valid": bool(result.get("valid")), "error": result.get("error")}
@@ -246,13 +244,13 @@ class AnnotationAgent:
 		self.max_translation_evidence_calls = int(max_translation_evidence_calls)
 		self.progress = progress or (lambda _message: None)
 
-	def _create_response(self, input_items, instructions, tools=TOOLS, max_output_tokens=800):
+	def _create_response(self, input_items, instructions, tools=TOOLS, max_output_tokens=800, text_format=None):
 		for attempt in range(4):
 			try:
-				return self.client.responses.create(
-					model=self.model_name, instructions=instructions, input=input_items,
-					tools=tools, store=False, max_output_tokens=max_output_tokens,
-				)
+				kwargs = {"model": self.model_name, "instructions": instructions, "input": input_items, "tools": tools, "store": False, "max_output_tokens": max_output_tokens}
+				if text_format is not None:
+					kwargs["text"] = {"format": text_format}
+				return self.client.responses.create(**kwargs)
 			except RateLimitError as error:
 				message = str(error)
 				requested = re.search(r"Limit\s+(\d+),\s+Requested\s+(\d+)", message)
@@ -273,26 +271,46 @@ class AnnotationAgent:
 			return self.nrdb.validate_analysis(item["text"], arguments["segmented"], arguments["annotation"])
 		raise ValueError("unknown tool: {}".format(name))
 
+	def _finalize_translation(self, base_input, evidence_summary, reason="evidence complete"):
+		final_input = list(base_input)
+		if evidence_summary:
+			final_input.append({"role": "user", "content": "Retrieved compact translation evidence:\n" + json.dumps(evidence_summary[-4:], ensure_ascii=False)})
+		final_input.append({"role": "user", "content": "Evidence gathering is finished ({}). Do not call tools. Return the final conservative Japanese translation now.".format(reason)})
+		last_error = None
+		for attempt, budget in enumerate((1200, 1800), start=1):
+			self.progress("  translation: forced finalization attempt {} (max_output_tokens={})".format(attempt, budget))
+			response = self._create_response(final_input, TRANSLATION_INSTRUCTIONS, tools=[], max_output_tokens=budget, text_format=TRANSLATION_FORMAT)
+			incomplete_reason = _response_incomplete_reason(response)
+			if incomplete_reason:
+				last_error = RuntimeError("translation response incomplete: {}".format(incomplete_reason))
+				self.progress("  translation: incomplete ({})".format(incomplete_reason))
+				continue
+			try:
+				return parse_translation_json(response.output_text)
+			except (json.JSONDecodeError, ValueError) as error:
+				last_error = error
+				self.progress("  translation: malformed final JSON; retrying")
+		if last_error:
+			raise last_error
+		raise RuntimeError("translation finalization failed")
+
 	def _translate_frozen(self, item, job, result):
-		payload = {
-			"sentence_id": int(item["sentence_id"]),
-			"source_text": item["text"],
-			"existing_translation_jp": item.get("translation_jp"),
-			"frozen_segmented": result["segmented"],
-			"frozen_annotation": result["annotation"],
-			"annotation_decision": result["decision"],
-			"annotation_confidence": result["confidence"],
-			"annotation_schema_id": int(job["annotation_schema_id"]),
-		}
+		payload = {"sentence_id": int(item["sentence_id"]), "source_text": item["text"], "existing_translation_jp": item.get("translation_jp"), "frozen_segmented": result["segmented"], "frozen_annotation": result["annotation"], "annotation_decision": result["decision"], "annotation_confidence": result["confidence"], "annotation_schema_id": int(job["annotation_schema_id"])}
 		base_input = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 		evidence_summary = []
 		evidence_calls = 0
 		self.progress("  translation: initial response (frozen annotation; budget {}/{})".format(evidence_calls, self.max_translation_evidence_calls))
-		response = self._create_response(base_input, TRANSLATION_INSTRUCTIONS, tools=TRANSLATION_TOOLS, max_output_tokens=600)
+		response = self._create_response(base_input, TRANSLATION_INSTRUCTIONS, tools=TRANSLATION_TOOLS, max_output_tokens=900)
 		for round_index in range(1, self.max_rounds + 1):
 			calls = [output for output in response.output if getattr(output, "type", None) == "function_call"]
 			if not calls:
-				translation = parse_translation_json(response.output_text)
+				incomplete_reason = _response_incomplete_reason(response)
+				if incomplete_reason:
+					return self._finalize_translation(base_input, evidence_summary, "previous response incomplete: {}".format(incomplete_reason))
+				try:
+					translation = parse_translation_json(response.output_text)
+				except (json.JSONDecodeError, ValueError):
+					return self._finalize_translation(base_input, evidence_summary, "previous final JSON malformed")
 				self.progress("  translation: final confidence={:.3f}".format(translation["confidence"]))
 				return translation
 
@@ -314,21 +332,19 @@ class AnnotationAgent:
 					evidence_calls += 1
 					evidence_summary.append({"tool": call.name, "arguments": arguments, "result": compact})
 				continuation.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(compact, ensure_ascii=False)})
+
 			self.progress("  translation: continue after tool round {} (evidence {}/{})".format(round_index, evidence_calls, self.max_translation_evidence_calls))
-			response = self._create_response(continuation, TRANSLATION_INSTRUCTIONS, tools=TRANSLATION_TOOLS, max_output_tokens=600)
+			if evidence_calls >= self.max_translation_evidence_calls:
+				final_input = continuation + [{"role": "user", "content": "Translation evidence budget is exhausted. Do not request more tools; return the final translation."}]
+				response = self._create_response(final_input, TRANSLATION_INSTRUCTIONS, tools=[], max_output_tokens=1200, text_format=TRANSLATION_FORMAT)
+			else:
+				response = self._create_response(continuation, TRANSLATION_INSTRUCTIONS, tools=TRANSLATION_TOOLS, max_output_tokens=900)
 		raise RuntimeError("translation phase exceeded maximum tool rounds")
 
 	def annotate(self, item, job, morph_result):
 		prompt_version = str(job.get("prompt_version") or "annotation-v1")
 		instructions = instructions_for_version(prompt_version)
-		input_payload = {
-			"sentence_id": int(item["sentence_id"]), "dialect_id": int(item["dialect_id"]),
-			"dialect_region": item.get("dialect_region"), "text": item["text"],
-			"translation_jp": item.get("translation_jp"),
-			"produce_translation": bool(job.get("produce_translation")),
-			"annotation_schema_id": int(job["annotation_schema_id"]),
-			"nrdb_morph": _compact_morph(morph_result),
-		}
+		input_payload = {"sentence_id": int(item["sentence_id"]), "dialect_id": int(item["dialect_id"]), "dialect_region": item.get("dialect_region"), "text": item["text"], "translation_jp": item.get("translation_jp"), "produce_translation": bool(job.get("produce_translation")), "annotation_schema_id": int(job["annotation_schema_id"]), "nrdb_morph": _compact_morph(morph_result)}
 		base_input = [{"role": "user", "content": json.dumps(input_payload, ensure_ascii=False)}]
 		evidence_summary = []
 		evidence_calls = 0
