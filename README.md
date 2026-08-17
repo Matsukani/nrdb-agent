@@ -11,6 +11,8 @@ Initial job modes:
 - `blind_gold`: evaluate on already human-annotated material. Gold annotation is never returned in the work item; it is revealed only after the AI result has been stored and scored.
 - `unannotated`: propose annotations for rows with blank human annotation. Results remain separate from the human annotation.
 
+Add `--translate` when creating a job to also request a Japanese translation. It is stored separately as `trsl_ai`; human `translation_jp` is never overwritten. This first translation mode is not a blind translation evaluation because an existing human translation may still be available to the annotation agent as semantic evidence.
+
 The agent cannot invent database IDs, modify UniCog, alter dictionaries, or overwrite `sentence_annotation`.
 
 ## Install
@@ -31,6 +33,14 @@ export NRDB_MORPH_URL='http://127.0.0.1:8765'
 ```bash
 nrdb-agent create --dataset-id 27 --mode blind_gold --limit 20 --model gpt-5.6
 nrdb-agent list
+nrdb-agent run JOB_ID
+nrdb-agent show JOB_ID
+```
+
+With AI translation enabled:
+
+```bash
+nrdb-agent create --dataset-id 27 --mode blind_gold --limit 20 --model gpt-5.6 --translate
 nrdb-agent run JOB_ID
 nrdb-agent show JOB_ID
 ```
