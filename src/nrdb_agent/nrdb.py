@@ -21,11 +21,11 @@ class NrdbClient:
 			raise RuntimeError(result.get("error") or "NRDB agent API failed")
 		return result
 
-	def create_job(self, dataset_id, mode, limit, model_name, prompt_version="annotation-v1", selection_seed=1):
+	def create_job(self, dataset_id, mode, limit, model_name, prompt_version="annotation-v1", selection_seed=1, produce_translation=False):
 		return self._agent_post("create_job", {
 			"dataset_id": int(dataset_id), "mode": mode, "limit": int(limit),
 			"model_name": model_name, "prompt_version": prompt_version,
-			"selection_seed": int(selection_seed),
+			"selection_seed": int(selection_seed), "produce_translation": bool(produce_translation),
 		})
 
 	def jobs(self):
