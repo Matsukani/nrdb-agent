@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nrdb-agent"
+version = "0.1.0"
+description = "Constrained and auditable LLM agents for NRDB"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+	"openai>=1.100.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[project.scripts]
+nrdb-agent = "nrdb_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
