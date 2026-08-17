@@ -77,12 +77,35 @@ def _response_output_as_input(response):
 	return items
 
 
+def _trace_arguments(name, arguments):
+	if name == "lookup_id":
+		return "label={}".format(arguments.get("label", ""))
+	if name == "corpus_examples":
+		return "label={} limit={}".format(arguments.get("label", ""), arguments.get("limit", ""))
+	if name == "validate_analysis":
+		segmented = str(arguments.get("segmented", ""))
+		annotation = str(arguments.get("annotation", ""))
+		return "segmented={!r} annotation={!r}".format(segmented, annotation)
+	return ""
+
+
+def _trace_result(name, result):
+	if name == "lookup_id":
+		return "lexical_entries={} global={}".format(len(result.get("lexical_entries", [])), "yes" if result.get("global") else "no")
+	if name == "corpus_examples":
+		return "examples={}".format(len(result.get("examples", [])))
+	if name == "validate_analysis":
+		return "valid={}".format(bool(result.get("valid")))
+	return "ok"
+
+
 class AnnotationAgent:
-	def __init__(self, nrdb, model_name, client=None, max_rounds=10):
+	def __init__(self, nrdb, model_name, client=None, max_rounds=10, progress=None):
 		self.nrdb = nrdb
 		self.model_name = model_name
 		self.client = client or OpenAI()
 		self.max_rounds = int(max_rounds)
+		self.progress = progress or (lambda _message: None)
 
 	def _tool_result(self, name, arguments, item, schema_id):
 		if name == "lookup_id":
@@ -103,39 +126,26 @@ class AnnotationAgent:
 			"annotation_schema_id": int(job["annotation_schema_id"]),
 			"nrdb_morph": morph_result,
 		}
-		conversation_input = [{
-			"role": "user",
-			"content": json.dumps(input_payload, ensure_ascii=False),
-		}]
-		response = self.client.responses.create(
-			model=self.model_name,
-			instructions=INSTRUCTIONS,
-			input=conversation_input,
-			tools=TOOLS,
-			store=False,
-		)
-		for _round in range(self.max_rounds):
+		conversation_input = [{"role": "user", "content": json.dumps(input_payload, ensure_ascii=False)}]
+		self.progress("  llm: initial response ({})".format(self.model_name))
+		response = self.client.responses.create(model=self.model_name, instructions=INSTRUCTIONS, input=conversation_input, tools=TOOLS, store=False)
+		for round_index in range(1, self.max_rounds + 1):
 			calls = [output for output in response.output if getattr(output, "type", None) == "function_call"]
 			if not calls:
 				result = parse_final_json(response.output_text)
 				result["model_response_id"] = response.id
+				self.progress("  final: decision={} confidence={:.3f}".format(result["decision"], result["confidence"]))
 				return result
 
+			self.progress("  tool round {}: {} call(s)".format(round_index, len(calls)))
 			conversation_input.extend(_response_output_as_input(response))
 			for call in calls:
 				arguments = json.loads(call.arguments)
+				self.progress("    -> {}({})".format(call.name, _trace_arguments(call.name, arguments)))
 				tool_result = self._tool_result(call.name, arguments, item, int(job["annotation_schema_id"]))
-				conversation_input.append({
-					"type": "function_call_output",
-					"call_id": call.call_id,
-					"output": json.dumps(tool_result, ensure_ascii=False),
-				})
+				self.progress("    <- {}: {}".format(call.name, _trace_result(call.name, tool_result)))
+				conversation_input.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(tool_result, ensure_ascii=False)})
 
-			response = self.client.responses.create(
-				model=self.model_name,
-				instructions=INSTRUCTIONS,
-				input=conversation_input,
-				tools=TOOLS,
-				store=False,
-			)
+			self.progress("  llm: continue after tool round {}".format(round_index))
+			response = self.client.responses.create(model=self.model_name, instructions=INSTRUCTIONS, input=conversation_input, tools=TOOLS, store=False)
 		raise RuntimeError("agent exceeded maximum tool rounds")
