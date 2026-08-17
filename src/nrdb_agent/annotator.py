@@ -5,7 +5,7 @@ import time
 from openai import OpenAI, RateLimitError
 
 
-INSTRUCTIONS = """You are the constrained NRDB morphemic annotation agent.
+BASE_INSTRUCTIONS = """You are the constrained NRDB morphemic annotation agent.
 Your goal is to propose the most defensible segmentation and morphemic-ID annotation for one low-resource-language utterance.
 
 Rules:
@@ -25,6 +25,23 @@ Rules:
 Final response must be one JSON object and no surrounding prose:
 {"segmented":"...","annotation":"...","trsl_ai":"...","decision":"proposed|uncertain|failed","confidence":0.0,"evidence":{"note":"brief","labels_checked":[],"example_sentence_ids":[]}}
 """
+
+V2_RULES = """
+
+Miyako annotation conventions for annotation-v2:
+- Do not add ;cvb to a verb when the following verbal morphology is ipf. In this annotation scheme, ipf does not take a preceding ;cvb analysis.
+- Treat red as weak evidence. Do not prefer an analysis merely because red is present when another analysis is better supported by morphology, dictionary grounding, corpus examples, or the explicit conventions above.
+"""
+
+
+def instructions_for_version(prompt_version):
+	version = str(prompt_version or "annotation-v1")
+	if version == "annotation-v1":
+		return BASE_INSTRUCTIONS
+	if version == "annotation-v2":
+		return BASE_INSTRUCTIONS + V2_RULES
+	raise ValueError("unsupported prompt_version: {}".format(version))
+
 
 TOOLS = [
 	{
@@ -171,11 +188,11 @@ class AnnotationAgent:
 		self.max_evidence_calls = int(max_evidence_calls)
 		self.progress = progress or (lambda _message: None)
 
-	def _create_response(self, input_items):
+	def _create_response(self, input_items, instructions):
 		for attempt in range(4):
 			try:
 				return self.client.responses.create(
-					model=self.model_name, instructions=INSTRUCTIONS, input=input_items,
+					model=self.model_name, instructions=instructions, input=input_items,
 					tools=TOOLS, store=False, max_output_tokens=800,
 				)
 			except RateLimitError as error:
@@ -199,6 +216,7 @@ class AnnotationAgent:
 		raise ValueError("unknown tool: {}".format(name))
 
 	def annotate(self, item, job, morph_result):
+		instructions = instructions_for_version(job.get("prompt_version"))
 		input_payload = {
 			"sentence_id": int(item["sentence_id"]), "dialect_id": int(item["dialect_id"]),
 			"dialect_region": item.get("dialect_region"), "text": item["text"],
@@ -210,8 +228,8 @@ class AnnotationAgent:
 		base_input = [{"role": "user", "content": json.dumps(input_payload, ensure_ascii=False)}]
 		evidence_summary = []
 		evidence_calls = 0
-		self.progress("  llm: initial response ({})".format(self.model_name))
-		response = self._create_response(base_input)
+		self.progress("  llm: initial response ({}; {})".format(self.model_name, job.get("prompt_version") or "annotation-v1"))
+		response = self._create_response(base_input, instructions)
 		for round_index in range(1, self.max_rounds + 1):
 			calls = [output for output in response.output if getattr(output, "type", None) == "function_call"]
 			if not calls:
@@ -243,5 +261,5 @@ class AnnotationAgent:
 				continuation.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(compact, ensure_ascii=False)})
 
 			self.progress("  llm: continue after tool round {} (evidence {}/{})".format(round_index, evidence_calls, self.max_evidence_calls))
-			response = self._create_response(continuation)
+			response = self._create_response(continuation, instructions)
 		raise RuntimeError("agent exceeded maximum tool rounds")
