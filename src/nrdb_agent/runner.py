@@ -1,6 +1,11 @@
+import json
+
 from .annotator import AnnotationAgent
 from .annotator_v7 import AnnotationAgentV7
 from .annotator_v8 import AnnotationAgentV8
+
+
+AGENT_JSON_ATTEMPTS = 3
 
 
 def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
@@ -26,7 +31,16 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 				progress("  morph: analyze")
 				morph = nrdb.morph_analyze(item["text"], item["dialect_id"], job["annotation_schema_id"])
 				progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
-				result = agent.annotate(item, job, morph)
+				for attempt in range(1, AGENT_JSON_ATTEMPTS + 1):
+					try:
+						result = agent.annotate(item, job, morph)
+						break
+					except json.JSONDecodeError as error:
+						if attempt >= AGENT_JSON_ATTEMPTS:
+							raise
+						progress("  llm: malformed/truncated JSON (attempt {}/{}): {}; retrying sentence".format(
+							attempt, AGENT_JSON_ATTEMPTS, error,
+						))
 			except Exception as error:
 				progress("  infrastructure failure: {}".format(error))
 				raise
