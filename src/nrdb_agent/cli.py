@@ -35,12 +35,16 @@ def _print_results(payload):
 			print("human trsl:  {}".format(row["translation_jp"]))
 		if row.get("gold_annotation"):
 			print("gold ann:    {}".format(row["gold_annotation"]))
-		print("decision:    {} | confidence: {} | exact: {}".format(
-			row.get("decision") or "", row.get("confidence") or "",
-			row.get("exact_match") if row.get("exact_match") is not None else "n/a"
+		metrics = annotation_metrics(row.get("ai_annotation"), row.get("gold_annotation")) if row.get("gold_annotation") else None
+		linguistic_exact = int(metrics["linguistic_exact"]) if metrics is not None else "n/a"
+		raw_exact = row.get("exact_match") if row.get("exact_match") is not None else "n/a"
+		exact_suffix = ""
+		if metrics is not None and raw_exact != "n/a" and int(raw_exact) != linguistic_exact:
+			exact_suffix = " | raw exact: {}".format(raw_exact)
+		print("decision:    {} | confidence: {} | exact: {}{}".format(
+			row.get("decision") or "", row.get("confidence") or "", linguistic_exact, exact_suffix
 		))
-		if row.get("gold_annotation"):
-			metrics = annotation_metrics(row.get("ai_annotation"), row.get("gold_annotation"))
+		if metrics is not None:
 			print("ID match:    {} ({}/{}) | S:{} I:{} D:{}".format(
 				_pct(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"]),
 				metrics["substitutions"], metrics["insertions"], metrics["deletions"],
@@ -51,6 +55,7 @@ def _print_results(payload):
 	if metrics["sentences_scored"]:
 		print("ID METRICS")
 		print("  sentences scored: {}".format(metrics["sentences_scored"]))
+		print("  exact matches:    {} ({})".format(metrics["linguistic_exact_matches"], _pct(metrics["linguistic_exact_accuracy"])))
 		print("  ID match rate:    {} ({}/{} aligned IDs)".format(
 			_pct(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"])
 		))
@@ -64,6 +69,20 @@ def _print_results(payload):
 			print("CONFUSION MATRIX (gold -> predicted)")
 			for entry in metrics["confusions"]:
 				print("  {:>4}  {} -> {}".format(entry["count"], entry["gold"], entry["predicted"]))
+
+
+def _show_with_linguistic_metrics(nrdb, job_id):
+	summary = nrdb.summary(job_id)
+	results = nrdb.job_results(job_id)
+	metrics = job_annotation_metrics(results.get("results", []))
+	if metrics["sentences_scored"]:
+		summary["summary"]["raw_exact_matches"] = summary["summary"].get("exact_matches")
+		summary["summary"]["raw_exact_accuracy"] = summary["summary"].get("exact_accuracy")
+		summary["summary"]["exact_matches"] = metrics["linguistic_exact_matches"]
+		summary["summary"]["exact_accuracy"] = metrics["linguistic_exact_accuracy"]
+		summary["summary"]["id_match_rate"] = metrics["id_match_rate"]
+		summary["summary"]["id_error_rate"] = metrics["id_error_rate"]
+	return summary
 
 
 def main():
@@ -106,7 +125,7 @@ def main():
 	elif args.command == "run":
 		_print_json(run_job(nrdb, args.job_id, max_items=args.max_items))
 	elif args.command == "show":
-		_print_json(nrdb.summary(args.job_id))
+		_print_json(_show_with_linguistic_metrics(nrdb, args.job_id))
 	elif args.command == "results":
 		_print_results(nrdb.job_results(args.job_id))
 	return 0
