@@ -1,4 +1,5 @@
 from .annotator import AnnotationAgent
+from .annotator_v7 import AnnotationAgentV7
 
 
 def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
@@ -7,7 +8,8 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 	items = bundle["items"]
 	if max_items is not None:
 		items = items[:max(0, int(max_items))]
-	agent = AnnotationAgent(nrdb, job["model_name"], client=openai_client, progress=progress)
+	agent_class = AnnotationAgentV7 if job.get("prompt_version") == "annotation-v7" else AnnotationAgent
+	agent = agent_class(nrdb, job["model_name"], client=openai_client, progress=progress)
 	nrdb.set_job_status(job_id, "running")
 	completed = 0
 	try:
