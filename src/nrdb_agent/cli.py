@@ -10,15 +10,16 @@ def _print_json(value):
 	print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
-def _format_rate(value):
-	return "n/a" if value is None else "{:.1%}".format(value)
+def _pct(value):
+	return "n/a" if value is None else "{:.1f}%".format(100.0 * value)
 
 
 def _print_results(payload):
 	job = payload["job"]
 	rows = payload.get("results", [])
-	print("job {} | dataset {} ({}) | status {} | model {}".format(
-		job["id"], job["dataset_id"], job.get("dataset_name", ""), job.get("status", ""), job.get("model_name", "")
+	print("job {} | dataset {} ({}) | status {} | model {} | prompt {}".format(
+		job["id"], job["dataset_id"], job.get("dataset_name", ""), job.get("status", ""),
+		job.get("model_name", ""), job.get("prompt_version", "")
 	))
 	print("=" * 80)
 	for index, row in enumerate(rows, start=1):
@@ -35,12 +36,13 @@ def _print_results(payload):
 		if row.get("gold_annotation"):
 			print("gold ann:    {}".format(row["gold_annotation"]))
 		print("decision:    {} | confidence: {} | exact: {}".format(
-			row.get("decision") or "", row.get("confidence") or "", row.get("exact_match") if row.get("exact_match") is not None else "n/a"
+			row.get("decision") or "", row.get("confidence") or "",
+			row.get("exact_match") if row.get("exact_match") is not None else "n/a"
 		))
 		if row.get("gold_annotation"):
 			metrics = annotation_metrics(row.get("ai_annotation"), row.get("gold_annotation"))
 			print("ID match:    {} ({}/{}) | S:{} I:{} D:{}".format(
-				_format_rate(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"]),
+				_pct(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"]),
 				metrics["substitutions"], metrics["insertions"], metrics["deletions"],
 			))
 		print("-" * 80)
@@ -50,14 +52,18 @@ def _print_results(payload):
 		print("ID METRICS")
 		print("  sentences scored: {}".format(metrics["sentences_scored"]))
 		print("  ID match rate:    {} ({}/{} aligned IDs)".format(
-			_format_rate(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"])
+			_pct(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"])
 		))
 		print("  ID error rate:    {} ({} edits / {} gold IDs)".format(
-			_format_rate(metrics["id_error_rate"]), metrics["edits"], metrics["gold_ids"]
+			_pct(metrics["id_error_rate"]), metrics["edits"], metrics["gold_ids"]
 		))
 		print("  substitutions:    {}".format(metrics["substitutions"]))
 		print("  insertions:       {}".format(metrics["insertions"]))
 		print("  deletions:        {}".format(metrics["deletions"]))
+		if metrics["confusions"]:
+			print("CONFUSION MATRIX (gold -> predicted)")
+			for entry in metrics["confusions"]:
+				print("  {:>4}  {} -> {}".format(entry["count"], entry["gold"], entry["predicted"]))
 
 
 def main():
@@ -72,7 +78,7 @@ def main():
 	create.add_argument("--limit", type=int, default=100)
 	create.add_argument("--seed", type=int, default=1)
 	create.add_argument("--model", default="gpt-5.6")
-	create.add_argument("--prompt-version", default="annotation-v1")
+	create.add_argument("--prompt-version", choices=["annotation-v1", "annotation-v2"], default="annotation-v2")
 	create.add_argument("--translate", action="store_true", help="Also generate a Japanese translation and store it as trsl_ai")
 	create.add_argument("--blind-translation", action="store_true", help="Generate trsl_ai without exposing translation_jp to the agent; implies --translate")
 
