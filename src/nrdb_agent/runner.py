@@ -16,23 +16,20 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 			try:
 				morph = nrdb.morph_analyze(item["text"], item["dialect_id"], job["annotation_schema_id"])
 				result = agent.annotate(item, job, morph)
-				nrdb.save_result(
-					job_id=job_id,
-					sentence_id=item["sentence_id"],
-					segmented=result["segmented"],
-					annotation=result["annotation"],
-					decision=result["decision"],
-					confidence=result["confidence"],
-					evidence=result["evidence"],
-					model_response_id=result.get("model_response_id"),
-				)
 			except Exception as error:
-				nrdb.save_result(
-					job_id=job_id, sentence_id=item["sentence_id"], segmented="", annotation="",
-					decision="failed", confidence=0.0,
-					evidence={"error": str(error)}, model_response_id=None,
-				)
-				progress("  failed: {}".format(error))
+				progress("  infrastructure failure: {}".format(error))
+				raise
+
+			nrdb.save_result(
+				job_id=job_id,
+				sentence_id=item["sentence_id"],
+				segmented=result["segmented"],
+				annotation=result["annotation"],
+				decision=result["decision"],
+				confidence=result["confidence"],
+				evidence=result["evidence"],
+				model_response_id=result.get("model_response_id"),
+			)
 			completed += 1
 		if max_items is None or completed >= len(bundle["items"]):
 			nrdb.set_job_status(job_id, "completed")
