@@ -13,6 +13,7 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 	bundle = nrdb.job_items(job_id)
 	job = bundle["job"]
 	items = bundle["items"]
+	nrdb.exclude_job_id = int(job_id)
 	if max_items is not None:
 		items = items[:max(0, int(max_items))]
 	prompt_version = job.get("prompt_version")
