@@ -2,21 +2,25 @@ class SurfaceModelCritic:
 	def __init__(self, model_path=None, model=None, disagreement_margin=0.75):
 		if model is None:
 			try:
-				from nrdb_morph.surface_realization import SurfaceRealizationModel
+				from nrdb_morph.surface_bidirectional import load_surface_model
 			except ImportError as error:
 				raise RuntimeError(
-					"--surface-model requires nrdb-morph in the nrdb-agent environment; run: pip install -e ../nrdb-morph"
+					"--surface-model requires current nrdb-morph in the nrdb-agent environment; run: pip install -e ../nrdb-morph"
 				) from error
-			model = SurfaceRealizationModel.load(model_path)
+			model = load_surface_model(model_path)
 		self.model = model
 		self.disagreement_margin = float(disagreement_margin)
+		self.bidirectional = hasattr(model, "next_label_forms")
 
-	def _priority_suggestions(self, label, previous_surface, dialect_ids, annotation_schema_id, phrase_start):
+	def _surface_kwargs(self, next_label):
+		return {"next_label": next_label} if self.bidirectional else {}
+
+	def _priority_suggestions(self, label, previous_surface, next_label, dialect_ids, annotation_schema_id, phrase_start):
 		fallback = None
 		for dialect_id in dialect_ids:
 			suggestions = self.model.suggest_forms(
 				label, previous_surface, int(dialect_id), int(annotation_schema_id),
-				phrase_start=bool(phrase_start), top_k=3,
+				phrase_start=bool(phrase_start), top_k=3, **self._surface_kwargs(next_label)
 			)
 			if not suggestions:
 				continue
@@ -26,11 +30,11 @@ class SurfaceModelCritic:
 				fallback = (suggestions, int(dialect_id), "schema_pool")
 		return fallback or ([], int(dialect_ids[0]), "none")
 
-	def _generated_score(self, label, generated, suggestions, previous_surface, dialect_id, annotation_schema_id, phrase_start):
+	def _generated_score(self, label, generated, suggestions, previous_surface, next_label, dialect_id, annotation_schema_id, phrase_start):
 		forms = [generated] + [value.get("form") for value in suggestions if value.get("form")]
 		ranked = self.model.rank_forms(
 			label, forms, previous_surface, int(dialect_id), int(annotation_schema_id),
-			phrase_start=bool(phrase_start),
+			phrase_start=bool(phrase_start), **self._surface_kwargs(next_label)
 		)
 		by_form = {value.get("form"): value for value in ranked}
 		return by_form.get(generated, {"form": generated, "score": None})
@@ -53,12 +57,13 @@ class SurfaceModelCritic:
 			previous = ""
 			for segment_index, (surface, label) in enumerate(zip(surfaces, labels)):
 				phrase_start = segment_index == 0
+				next_label = labels[segment_index + 1] if segment_index + 1 < len(labels) else "<EOS>"
 				suggestions, evidence_dialect, source = self._priority_suggestions(
-					label, previous, dialect_ids, annotation_schema_id, phrase_start,
+					label, previous, next_label, dialect_ids, annotation_schema_id, phrase_start,
 				)
 				if suggestions:
 					generated_score = self._generated_score(
-						label, surface, suggestions, previous, evidence_dialect,
+						label, surface, suggestions, previous, next_label, evidence_dialect,
 						annotation_schema_id, phrase_start,
 					)
 					top = suggestions[0]
@@ -72,10 +77,16 @@ class SurfaceModelCritic:
 						"segment": segment_index + 1,
 						"label": label,
 						"previous_surface": previous,
+						"next_label": next_label,
 						"generated_form": surface,
 						"generated_score": current_score,
 						"suggestions": [
-							{"form": value.get("form"), "score": value.get("score"), "attested_count": value.get("attested_count"), "form_source": value.get("form_source")}
+							{
+								"form": value.get("form"), "score": value.get("score"),
+								"attested_count": value.get("attested_count"), "form_source": value.get("form_source"),
+								"right_context_log_probability": value.get("right_context_log_probability"),
+								"right_context_source": value.get("right_context_source"),
+							}
 							for value in suggestions
 						],
 						"evidence_dialect_id": evidence_dialect,
@@ -89,6 +100,7 @@ class SurfaceModelCritic:
 		strong_count = sum(int(value["strong_disagreement"]) for value in diagnostics)
 		return {
 			"valid_alignment": True,
+			"surface_model_bidirectional": self.bidirectional,
 			"target_dialect_ids": dialect_ids,
 			"annotation_schema_id": int(annotation_schema_id),
 			"phonotactic_mean_log_probability": phonotactic.get("mean_log_probability"),
