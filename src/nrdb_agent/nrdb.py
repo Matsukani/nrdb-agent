@@ -56,7 +56,7 @@ class NrdbClient:
 	def lookup_id(self, label, annotation_schema_id):
 		return self._evidence_get("lookup_id", label=label, annotation_schema_id=int(annotation_schema_id))
 
-	def examples(self, label, annotation_schema_id, exclude_sentence_id, limit=12, exclude_dataset_id=0):
+	def examples(self, label, annotation_schema_id, exclude_sentence_id, limit=12, exclude_job_id=0):
 		label = str(label or "").strip()
 		segment_count = len(label.split("-")) if label else 0
 		if len(label) > 256 or segment_count > 8:
@@ -71,15 +71,15 @@ class NrdbClient:
 			}
 		return self._evidence_get(
 			"examples", label=label, annotation_schema_id=int(annotation_schema_id),
-			exclude_sentence_id=int(exclude_sentence_id), exclude_dataset_id=int(exclude_dataset_id or 0), limit=int(limit),
+			exclude_sentence_id=int(exclude_sentence_id), exclude_job_id=int(exclude_job_id or 0), limit=int(limit),
 		)
 
-	def search_japanese_evidence(self, query, annotation_schema_id, exclude_sentence_id, exclude_dataset_id, region=None, limit=8):
+	def search_japanese_evidence(self, query, annotation_schema_id, exclude_sentence_id, exclude_job_id, region=None, limit=8):
 		payload = self.http.get(self.reverse_evidence_url, {
 			"q": str(query or "").strip(),
 			"annotation_schema_id": int(annotation_schema_id),
 			"exclude_sentence_id": int(exclude_sentence_id),
-			"exclude_dataset_id": int(exclude_dataset_id),
+			"exclude_job_id": int(exclude_job_id),
 			"region": str(region or "").strip(),
 			"limit": int(limit),
 		})
