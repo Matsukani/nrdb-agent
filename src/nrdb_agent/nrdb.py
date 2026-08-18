@@ -10,6 +10,7 @@ class NrdbClient:
 		self.evidence_url = os.environ.get("NRDB_AGENT_EVIDENCE_URL") or base_url + "/agent_evidence.php"
 		self.results_url = os.environ.get("NRDB_AGENT_RESULTS_URL") or base_url + "/agent_results.php"
 		self.form_support_url = os.environ.get("NRDB_AGENT_FORM_SUPPORT_URL") or base_url + "/agent_form_support.php"
+		self.reverse_evidence_url = os.environ.get("NRDB_AGENT_REVERSE_EVIDENCE_URL") or base_url + "/agent_reverse_evidence.php"
 		self.morph_url = (morph_url or os.environ.get("NRDB_MORPH_URL") or "http://127.0.0.1:8765").rstrip("/")
 		self.http = JsonHttpClient(timeout=timeout)
 
@@ -72,6 +73,18 @@ class NrdbClient:
 			"examples", label=label, annotation_schema_id=int(annotation_schema_id),
 			exclude_sentence_id=int(exclude_sentence_id), limit=int(limit),
 		)
+
+	def search_japanese_evidence(self, query, annotation_schema_id, exclude_sentence_id, region=None, limit=8):
+		payload = self.http.get(self.reverse_evidence_url, {
+			"q": str(query or "").strip(),
+			"annotation_schema_id": int(annotation_schema_id),
+			"exclude_sentence_id": int(exclude_sentence_id),
+			"region": str(region or "").strip(),
+			"limit": int(limit),
+		})
+		if not payload.get("success"):
+			raise RuntimeError(payload.get("error") or "NRDB reverse evidence API failed")
+		return payload
 
 	def form_id_support(self, surface, candidate_id, region, annotation_schema_id):
 		payload = self.http.get(self.form_support_url, {
