@@ -1,0 +1,110 @@
+import os
+
+from .annotator_v8 import AnnotationAgentV8
+from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
+from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
+
+
+def _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids=None):
+	if dialect_ids:
+		return [int(value) for value in dialect_ids]
+	rows = nrdb.region_dialects(region, annotation_schema_id)
+	if not rows:
+		raise RuntimeError("no dialects available for region {!r} under annotation schema {}".format(region, annotation_schema_id))
+	return [int(row["id"]) for row in rows]
+
+
+def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None, model_name="gpt-5.6", surface_model=None, openai_client=None, progress=print):
+	text = str(text or "").strip()
+	region = str(region or "").strip()
+	if not text:
+		raise ValueError("translation text cannot be empty")
+	if not region:
+		raise ValueError("translation region cannot be empty")
+	annotation_schema_id = int(annotation_schema_id)
+	if annotation_schema_id <= 0:
+		raise ValueError("annotation schema ID must be positive")
+	target = str(target or "").strip().lower()
+	if target not in {"japanese", "miyako"}:
+		raise ValueError("target must be japanese or miyako")
+
+	dialects = _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids)
+	nrdb.exclude_job_id = 0
+
+	if target == "japanese":
+		dialect_id = dialects[0]
+		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={}".format(region, dialect_id, annotation_schema_id))
+		progress("  morph: analyze")
+		morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
+		progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
+		item = {
+			"sentence_id": 0,
+			"dialect_id": dialect_id,
+			"dialect_region": region,
+			"text": text,
+			"translation_jp": None,
+		}
+		job = {
+			"annotation_schema_id": annotation_schema_id,
+			"model_name": model_name,
+			"prompt_version": "annotation-v8",
+			"produce_translation": True,
+			"blind_translation": False,
+		}
+		agent = AnnotationAgentV8(nrdb, model_name, client=openai_client, progress=progress)
+		result = agent.annotate(item, job, morph)
+		return {
+			"direction": "miyako_to_japanese",
+			"source": text,
+			"region": region,
+			"annotation_schema_id": annotation_schema_id,
+			"morph_dialect_id": dialect_id,
+			"segmented": result.get("segmented", ""),
+			"annotation": result.get("annotation", ""),
+			"translation": result.get("trsl_ai", ""),
+			"decision": result.get("decision"),
+			"confidence": result.get("confidence"),
+			"evidence": result.get("evidence", {}),
+		}
+
+	if not dialect_ids:
+		raise ValueError("Japanese -> Miyako translation requires an ordered --dialects list")
+	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
+	progress("translate: Japanese -> Miyako | region={} dialects={} schema={}".format(region, dialects, annotation_schema_id))
+	if surface_model:
+		progress("  surface critic: {}".format(surface_model))
+	item = {
+		"sentence_id": 0,
+		"dialect_id": dialects[0],
+		"dialect_region": region,
+		"text": "",
+		"translation_jp": text,
+	}
+	job = {
+		"annotation_schema_id": annotation_schema_id,
+		"model_name": model_name,
+		"prompt_version": "reverse-v1",
+		"produce_translation": False,
+		"blind_translation": False,
+		"target_dialect_ids": dialects,
+	}
+	if surface_model:
+		agent = SurfaceCriticReverseAgent(
+			nrdb, model_name, client=openai_client, progress=progress,
+			surface_model_path=surface_model,
+		)
+	else:
+		agent = SyntaxAwareReverseSurfaceAgent(nrdb, model_name, client=openai_client, progress=progress)
+	result = agent.annotate(item, job, None)
+	return {
+		"direction": "japanese_to_miyako",
+		"source": text,
+		"region": region,
+		"annotation_schema_id": annotation_schema_id,
+		"target_dialect_ids": dialects,
+		"annotation": result.get("annotation", ""),
+		"translation": result.get("segmented", ""),
+		"decision": result.get("decision"),
+		"confidence": result.get("confidence"),
+		"evidence": result.get("evidence", {}),
+	}
