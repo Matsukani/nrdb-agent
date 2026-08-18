@@ -4,10 +4,20 @@ import json
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
 from .runner import run_job
+from .translate import translate_text
 
 
 def _print_json(value):
 	print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
+
+
+def _print_translation(value):
+	print("source:      {}".format(value.get("source", "")))
+	if value.get("segmented"):
+		print("segmented:   {}".format(value.get("segmented", "")))
+	print("annotation:  {}".format(value.get("annotation", "")))
+	print("translation: {}".format(value.get("translation", "")))
+	print("confidence:  {} | decision: {}".format(value.get("confidence", ""), value.get("decision", "")))
 
 
 def _pct(value):
@@ -158,6 +168,17 @@ def main():
 	run.add_argument("job_id", type=int)
 	run.add_argument("--max-items", type=int, default=None, help="Process only this many items; useful for a smoke test")
 	run.add_argument("--target-dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...", help="For reverse-v1, also realize Miyako surface forms using this ordered dialect priority")
+	run.add_argument("--surface-model", default=None, help="Optional nrdb-morph surface_model.json for reverse surface criticism")
+
+	translate = sub.add_parser("translate", help="Translate arbitrary Miyako or Japanese text without creating a job")
+	translate.add_argument("text")
+	translate.add_argument("--target", choices=["japanese", "miyako"], required=True)
+	translate.add_argument("--annotation-schema", dest="annotation_schema_id", type=int, required=True)
+	translate.add_argument("--region", required=True)
+	translate.add_argument("--dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...", help="Ordered target dialects; required for Japanese -> Miyako")
+	translate.add_argument("--surface-model", default=None, help="Optional nrdb-morph surface_model.json; also reads NRDB_SURFACE_MODEL")
+	translate.add_argument("--model", default="gpt-5.6", help="LLM model name; does not select the nrdb-morph model")
+	translate.add_argument("--json", action="store_true", help="Print complete translation result as JSON")
 
 	show = sub.add_parser("show", help="Show audit summary for one job")
 	show.add_argument("job_id", type=int)
@@ -177,7 +198,15 @@ def main():
 	elif args.command == "list":
 		_print_json(nrdb.jobs())
 	elif args.command == "run":
-		_print_json(run_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects))
+		_print_json(run_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, surface_model=args.surface_model))
+	elif args.command == "translate":
+		if args.target == "miyako" and not args.dialects:
+			parser.error("Japanese -> Miyako translation requires --dialects ID1,ID2,...")
+		value = translate_text(
+			nrdb, args.text, args.target, args.annotation_schema_id, args.region,
+			dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
+		)
+		_print_json(value) if args.json else _print_translation(value)
 	elif args.command == "show":
 		_print_json(_show_with_linguistic_metrics(nrdb, args.job_id))
 	elif args.command == "results":
