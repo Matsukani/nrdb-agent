@@ -1,6 +1,15 @@
 import json
 
-from .reverse_surface_agent import ReverseSurfaceAgent, SURFACE_FORMAT
+from .reverse_surface_agent import ReverseSurfaceAgent, SURFACE_FORMAT, SURFACE_INSTRUCTIONS
+
+
+SURFACE_SYNTAX_GUIDANCE = """NRDB annotation-to-surface syntax is binding:
+- SPACE separates phrases.
+- HYPHEN (-) separates independently realized annotation segments and therefore separate surface segments.
+- SEMICOLON (;) conflates multiple annotation atoms inside ONE annotation segment and therefore ONE surface segment. Never realize semicolon-conflated atoms as separate hyphenated morphemes.
+- Every annotation phrase and generated surface phrase must have exactly the same number of hyphen-delimited segments.
+Examples: `火un-acc-foc` has 3 surface slots; `消kv;cvb` has 1; `眠nv;cvb-foc-ipf` has 3 slots `[眠nv;cvb] [foc] [ipf]`.
+When a label is conflated, realize the COMPLETE label as one attested/allomorphic surface unit whenever possible. Constituent atoms may be useful as backoff evidence, but they do not license extra surface boundaries."""
 
 
 SURFACE_SYNTAX_REPAIR_INSTRUCTIONS = """You are the structural repair phase for NRDB Miyako surface realization.
@@ -49,7 +58,12 @@ def surface_alignment_error(segmented, annotation):
 
 
 class SyntaxAwareReverseSurfaceAgent(ReverseSurfaceAgent):
-	"""Reverse surface agent that enforces NRDB hyphen/semicolon realization syntax."""
+	"""Reverse surface agent that teaches and enforces NRDB hyphen/semicolon realization syntax."""
+
+	def _create_response(self, input_data, instructions, *args, **kwargs):
+		if instructions == SURFACE_INSTRUCTIONS:
+			instructions = instructions + "\n\n" + SURFACE_SYNTAX_GUIDANCE
+		return super()._create_response(input_data, instructions, *args, **kwargs)
 
 	def _repair_surface_syntax(self, item, job, id_result, surface_result, error):
 		annotation = id_result.get("annotation") or ""
