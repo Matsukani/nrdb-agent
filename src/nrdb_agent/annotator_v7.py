@@ -15,21 +15,24 @@ from .annotator import (
 V7_TRANSLATION_INSTRUCTIONS = """You are the constrained NRDB Japanese translation phase for annotation-v7.
 The segmentation and morphemic annotation supplied to you have already been finalized and are FROZEN. You must not revise, reinterpret, or replace them.
 
-Core principle:
-- NRDB annotation labels are IDENTIFIERS, not glosses. Never infer lexical meaning from kanji, spelling, or other human-readable material embedded in an ID label. For example, an ID visually containing 川 does not license translating it as 川. Lexical semantics must come from dictionary grounding.
+Core principles:
+- Most NRDB annotation labels are IDENTIFIERS, not glosses. Do not normally infer lexical meaning from kanji, spelling, or other human-readable material embedded in an ID label.
+- Exception: IDs in the reserved `n:` namespace explicitly represent Japanese lexical material. For example, `n:手紙` directly licenses Japanese 手紙 and does not require dictionary grounding to establish that lexical meaning. Treat the material following `n:` as Japanese lexical content, while still respecting surrounding Miyako grammar and constructional evidence.
+- Outside the reserved `n:` namespace, dictionary and corpus evidence outrank apparent semantics suggested by an ID's spelling. Only as a last resort, when an otherwise ungrounded lexical ID is transparently descriptive and no retrieved evidence contradicts it, you may use that transparent lexical content conservatively. Record such use as weak/ungrounded evidence rather than as authoritative dictionary grounding.
 
 Goal: produce a concise, natural Japanese translation grounded in the frozen annotation, bilingual dictionary data, and selectively retrieved corpus evidence.
 
 Rules:
-- Before translating, ground the lexical/content IDs that contribute referential or predicate meaning with ground_lexical_ids. Batch several IDs in one call. Dictionary meaning_jp/explanation_jp outrank any apparent meaning suggested by the ID label itself.
+- Before translating, ground the non-`n:` lexical/content IDs that contribute referential or predicate meaning with ground_lexical_ids. Batch several IDs in one call. Dictionary meaning_jp/explanation_jp outrank any apparent meaning suggested by a non-`n:` ID label.
+- `n:` IDs are already explicit Japanese lexical material and need not be sent to ground_lexical_ids merely to recover their Japanese meaning.
 - ground_lexical_ids accepts exact atomic NRDB annotation IDs only. Never put commentary, questions, guessed decompositions, full phrases, or explanatory text inside the labels array.
 - You do not need to ground obvious purely grammatical atoms such as tense, negation, case, topic/focus, or converbal markers unless their contribution is genuinely unclear.
-- If a content ID has no usable dictionary grounding, record it in ungrounded_ids and translate conservatively from other evidence. Do not guess from the ID's kanji/string.
-- Use corpus_examples primarily for constructional or grammatical interpretation and for contextual disambiguation after lexical grounding. Corpus evidence may help choose among dictionary-attested senses, but should not replace dictionary grounding with an inference from the ID spelling.
+- If a non-`n:` content ID has no usable dictionary grounding, record it in ungrounded_ids and translate conservatively from other evidence. As a final fallback only, transparent lexical material in that ID may be used when it is strongly obvious and is not contradicted by dictionary or corpus evidence.
+- Use corpus_examples primarily for constructional or grammatical interpretation and for contextual disambiguation after lexical grounding. Corpus evidence may help choose among dictionary-attested senses, but should not replace dictionary grounding with an inference from the spelling of a non-`n:` ID.
 - Prefer a short informative construction query. corpus_examples accepts at most 8 hyphen-separated segments and 256 characters.
 - Preserve information explicitly encoded by the frozen analysis, including negation, tense/aspect, modality, case/argument structure, focus/topic, direction/location, quantification, and semantically relevant reduplication.
 - Produce natural Japanese rather than an interlinear gloss.
-- Do not add semantic information that is not licensed by dictionary grounding, the frozen analysis, source context, or retrieved corpus evidence.
+- Do not add semantic information that is not licensed by dictionary grounding, reserved `n:` Japanese material, the frozen analysis, source context, corpus evidence, or the last-resort transparent-ID fallback described above.
 - When evidence is incomplete, prefer a conservative translation over an imaginative guess.
 - Do not produce chain-of-thought.
 
@@ -41,7 +44,7 @@ Final response must be one JSON object and no surrounding prose:
 GROUND_LEXICAL_IDS_TOOL = {
 	"type": "function",
 	"name": "ground_lexical_ids",
-	"description": "Batch-ground exact atomic lexical/content NRDB annotation IDs in the bilingual dictionary. Each labels item must be one existing annotation ID only: no commentary, questions, phrases, or explanatory text. Invalid items are returned as rejected evidence rather than aborting the tool call.",
+	"description": "Batch-ground exact atomic lexical/content NRDB annotation IDs in the bilingual dictionary. Reserved n: IDs already encode Japanese lexical material and normally do not need this tool merely to recover their Japanese meaning. Each labels item must be one existing annotation ID only: no commentary, questions, phrases, or explanatory text. Invalid items are returned as rejected evidence rather than aborting the tool call.",
 	"parameters": {
 		"type": "object",
 		"properties": {
@@ -186,7 +189,7 @@ class AnnotationAgentV7(AnnotationAgent):
 				if not self._has_dictionary_grounding(evidence_summary):
 					self.progress("  translation-v7: dictionary grounding required before finalization")
 					response = self._create_response(
-						base_input + [{"role": "user", "content": "You must call ground_lexical_ids for the lexical/content IDs before translating. Do not infer lexical semantics from ID spelling."}],
+						base_input + [{"role": "user", "content": "You must call ground_lexical_ids for the non-n: lexical/content IDs before translating. Reserved n: IDs already encode Japanese lexical material."}],
 						V7_TRANSLATION_INSTRUCTIONS, tools=tools, max_output_tokens=900,
 					)
 					continue
@@ -209,10 +212,10 @@ class AnnotationAgentV7(AnnotationAgent):
 				arguments = json.loads(call.arguments)
 				self.progress("    -> {}({})".format(call.name, self._v7_trace_arguments(call.name, arguments)))
 				if call.name == "corpus_examples" and not self._has_dictionary_grounding(evidence_summary):
-					compact = {"grounding_required": True, "message": "Ground lexical/content IDs with ground_lexical_ids before corpus construction search."}
+					compact = {"grounding_required": True, "message": "Ground non-n: lexical/content IDs with ground_lexical_ids before corpus construction search. Reserved n: IDs already encode Japanese lexical material."}
 					self.progress("    <- corpus_examples: skipped (dictionary grounding required first)")
 				elif evidence_calls >= self.max_translation_evidence_calls:
-					compact = {"budget_exhausted": True, "message": "Translation evidence-call budget exhausted; translate conservatively from dictionary grounding and existing evidence."}
+					compact = {"budget_exhausted": True, "message": "Translation evidence-call budget exhausted; translate conservatively from dictionary grounding, reserved n: Japanese material, and existing evidence."}
 					self.progress("    <- {}: skipped (translation evidence budget exhausted)".format(call.name))
 				else:
 					tool_result = self._v7_tool_result(call.name, arguments, item, int(job["annotation_schema_id"]))
