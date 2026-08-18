@@ -65,6 +65,8 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 				evidence=result["evidence"],
 				model_response_id=result.get("model_response_id"),
 			)
+			if prompt_version == "reverse-v1":
+				progress("  reverse IDs: {!r}".format(result.get("annotation", "")))
 			if job.get("produce_translation"):
 				progress("  translation: {!r}".format(result.get("trsl_ai", "")))
 			progress("  done")
