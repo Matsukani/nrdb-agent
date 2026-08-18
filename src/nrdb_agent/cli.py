@@ -14,14 +14,30 @@ def _pct(value):
 	return "n/a" if value is None else "{:.1f}%".format(100.0 * value)
 
 
+def _parse_dialect_ids(value):
+	if not value:
+		return None
+	out = []
+	for part in str(value).split(","):
+		part = part.strip()
+		if not part:
+			continue
+		try:
+			item = int(part)
+		except ValueError:
+			raise argparse.ArgumentTypeError("target dialects must be comma-separated integer IDs")
+		if item <= 0:
+			raise argparse.ArgumentTypeError("target dialect IDs must be positive")
+		if item not in out:
+			out.append(item)
+	return out or None
+
+
 def _print_results(payload, show_sentences=0):
 	job = payload["job"]
 	rows = payload.get("results", [])
-	reverse = job.get("prompt_version") == "reverse-v1"
-	print("job {} | dataset {} ({}) | status {} | model {} | prompt {}".format(
-		job["id"], job["dataset_id"], job.get("dataset_name", ""), job.get("status", ""),
-		job.get("model_name", ""), job.get("prompt_version", "")
-	))
+	reverse = job.get("prompt_version") in {"reverse-v1", "reverse-v2"}
+	print("job {} | dataset {} ({}) | status {} | model {} | prompt {}".format(job["id"], job["dataset_id"], job.get("dataset_name", ""), job.get("status", ""), job.get("model_name", ""), job.get("prompt_version", "")))
 	print("=" * 80)
 
 	if show_sentences:
@@ -31,6 +47,8 @@ def _print_results(payload, show_sentences=0):
 			if reverse:
 				print("Japanese:    {}".format(row.get("translation_jp") or row.get("gold_translation_jp") or ""))
 				print("pred IDs:    {}".format(row.get("ai_annotation") or ""))
+				if job.get("prompt_version") == "reverse-v2":
+					print("pred Miyako: {}".format(row.get("ai_segmented") or ""))
 				print("gold IDs:    {}".format(row.get("gold_annotation") or ""))
 				print("gold Miyako: {}".format(row.get("source_text") or ""))
 			else:
@@ -53,20 +71,12 @@ def _print_results(payload, show_sentences=0):
 			exact_suffix = ""
 			if not reverse and metrics is not None and raw_exact != "n/a" and int(raw_exact) != linguistic_exact:
 				exact_suffix = " | raw exact: {}".format(raw_exact)
-			print("decision:    {} | confidence: {} | exact: {}{}".format(
-				row.get("decision") or "", row.get("confidence") or "", linguistic_exact, exact_suffix
-			))
+			print("decision:    {} | confidence: {} | exact: {}{}".format(row.get("decision") or "", row.get("confidence") or "", linguistic_exact, exact_suffix))
 			if not reverse and row.get("gold_segmented"):
 				seg_metrics = segmentation_metrics(row.get("ai_segmented"), row.get("gold_segmented"))
-				print("SEG boundary: P={} R={} F1={} | exact: {} | FP:{} FN:{}".format(
-					_pct(seg_metrics["boundary_precision"]), _pct(seg_metrics["boundary_recall"]), _pct(seg_metrics["boundary_f1"]),
-					int(seg_metrics["exact"]), seg_metrics["false_positive_boundaries"], seg_metrics["false_negative_boundaries"],
-				))
+				print("SEG boundary: P={} R={} F1={} | exact: {} | FP:{} FN:{}".format(_pct(seg_metrics["boundary_precision"]), _pct(seg_metrics["boundary_recall"]), _pct(seg_metrics["boundary_f1"]), int(seg_metrics["exact"]), seg_metrics["false_positive_boundaries"], seg_metrics["false_negative_boundaries"]))
 			if metrics is not None:
-				print("ID match:    {} ({}/{}) | S:{} I:{} D:{}".format(
-					_pct(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"]),
-					metrics["substitutions"], metrics["insertions"], metrics["deletions"],
-				))
+				print("ID match:    {} ({}/{}) | S:{} I:{} D:{}".format(_pct(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"]), metrics["substitutions"], metrics["insertions"], metrics["deletions"]))
 			print("-" * 80)
 		if show_sentences > 0 and len(rows) > show_sentences:
 			print("showing {} of {} sentences (use --show-sentences with no number to show all)".format(show_sentences, len(rows)))
@@ -78,12 +88,8 @@ def _print_results(payload, show_sentences=0):
 			print("SEGMENTATION METRICS")
 			print("  sentences scored: {}".format(seg_metrics["sentences_scored"]))
 			print("  exact matches:    {} ({})".format(seg_metrics["exact_matches"], _pct(seg_metrics["exact_accuracy"])))
-			print("  boundary precision: {} ({}/{} predicted boundaries)".format(
-				_pct(seg_metrics["boundary_precision"]), seg_metrics["correct_boundaries"], seg_metrics["predicted_boundaries"]
-			))
-			print("  boundary recall:    {} ({}/{} gold boundaries)".format(
-				_pct(seg_metrics["boundary_recall"]), seg_metrics["correct_boundaries"], seg_metrics["gold_boundaries"]
-			))
+			print("  boundary precision: {} ({}/{} predicted boundaries)".format(_pct(seg_metrics["boundary_precision"]), seg_metrics["correct_boundaries"], seg_metrics["predicted_boundaries"]))
+			print("  boundary recall:    {} ({}/{} gold boundaries)".format(_pct(seg_metrics["boundary_recall"]), seg_metrics["correct_boundaries"], seg_metrics["gold_boundaries"]))
 			print("  boundary F1:        {}".format(_pct(seg_metrics["boundary_f1"])))
 			print("  false positives:    {}".format(seg_metrics["false_positive_boundaries"]))
 			print("  false negatives:    {}".format(seg_metrics["false_negative_boundaries"]))
@@ -96,12 +102,8 @@ def _print_results(payload, show_sentences=0):
 		print("REVERSE ID METRICS" if reverse else "ID METRICS")
 		print("  sentences scored: {}".format(metrics["sentences_scored"]))
 		print("  exact matches:    {} ({})".format(metrics["linguistic_exact_matches"], _pct(metrics["linguistic_exact_accuracy"])))
-		print("  ID match rate:    {} ({}/{} aligned IDs)".format(
-			_pct(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"])
-		))
-		print("  ID error rate:    {} ({} edits / {} gold IDs)".format(
-			_pct(metrics["id_error_rate"]), metrics["edits"], metrics["gold_ids"]
-		))
+		print("  ID match rate:    {} ({}/{} aligned IDs)".format(_pct(metrics["id_match_rate"]), metrics["matches"], max(metrics["gold_ids"], metrics["predicted_ids"])))
+		print("  ID error rate:    {} ({} edits / {} gold IDs)".format(_pct(metrics["id_error_rate"]), metrics["edits"], metrics["gold_ids"]))
 		print("  substitutions:    {}".format(metrics["substitutions"]))
 		print("  insertions:       {}".format(metrics["insertions"]))
 		print("  deletions:        {}".format(metrics["deletions"]))
@@ -115,7 +117,7 @@ def _show_with_linguistic_metrics(nrdb, job_id):
 	summary = nrdb.summary(job_id)
 	results = nrdb.job_results(job_id)
 	rows = results.get("results", [])
-	reverse = results.get("job", {}).get("prompt_version") == "reverse-v1"
+	reverse = results.get("job", {}).get("prompt_version") in {"reverse-v1", "reverse-v2"}
 	metrics = job_annotation_metrics(rows)
 	seg_metrics = job_segmentation_metrics(rows) if not reverse else {"sentences_scored": 0}
 	if metrics["sentences_scored"]:
@@ -146,7 +148,7 @@ def main():
 	create.add_argument("--limit", type=int, default=100)
 	create.add_argument("--seed", type=int, default=1)
 	create.add_argument("--model", default="gpt-5.6")
-	create.add_argument("--prompt-version", choices=["annotation-v1", "annotation-v2", "annotation-v3", "annotation-v4", "annotation-v5", "annotation-v6", "annotation-v7", "annotation-v8", "reverse-v1"], default="annotation-v8")
+	create.add_argument("--prompt-version", choices=["annotation-v1", "annotation-v2", "annotation-v3", "annotation-v4", "annotation-v5", "annotation-v6", "annotation-v7", "annotation-v8", "reverse-v1", "reverse-v2"], default="annotation-v8")
 	create.add_argument("--translate", action="store_true", help="Also generate a Japanese translation and store it as trsl_ai")
 	create.add_argument("--blind-translation", action="store_true", help="Generate trsl_ai without exposing translation_jp to the agent; implies --translate")
 
@@ -155,6 +157,7 @@ def main():
 	run = sub.add_parser("run", help="Run one existing job")
 	run.add_argument("job_id", type=int)
 	run.add_argument("--max-items", type=int, default=None, help="Process only this many items; useful for a smoke test")
+	run.add_argument("--target-dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...", help="Ordered dialect priority for reverse-v2 surface realization")
 
 	show = sub.add_parser("show", help="Show audit summary for one job")
 	show.add_argument("job_id", type=int)
@@ -166,18 +169,15 @@ def main():
 	args = parser.parse_args()
 	nrdb = NrdbClient(args.agent_url, args.morph_url)
 	if args.command == "create":
-		if args.prompt_version == "reverse-v1" and args.mode != "blind_gold":
-			parser.error("reverse-v1 currently requires --mode blind_gold for hidden-gold evaluation")
-		if args.prompt_version == "reverse-v1" and (args.translate or args.blind_translation):
-			parser.error("reverse-v1 predicts Miyako IDs only; do not use --translate")
-		_print_json(nrdb.create_job(
-			args.dataset_id, args.mode, args.limit, args.model, args.prompt_version,
-			args.seed, args.translate, args.blind_translation,
-		))
+		if args.prompt_version in {"reverse-v1", "reverse-v2"} and args.mode != "blind_gold":
+			parser.error("reverse jobs currently require --mode blind_gold for hidden-gold evaluation")
+		if args.prompt_version in {"reverse-v1", "reverse-v2"} and (args.translate or args.blind_translation):
+			parser.error("reverse jobs use Japanese as input; do not use --translate")
+		_print_json(nrdb.create_job(args.dataset_id, args.mode, args.limit, args.model, args.prompt_version, args.seed, args.translate, args.blind_translation))
 	elif args.command == "list":
 		_print_json(nrdb.jobs())
 	elif args.command == "run":
-		_print_json(run_job(nrdb, args.job_id, max_items=args.max_items))
+		_print_json(run_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects))
 	elif args.command == "show":
 		_print_json(_show_with_linguistic_metrics(nrdb, args.job_id))
 	elif args.command == "results":
