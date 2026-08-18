@@ -1,6 +1,7 @@
 import os
 
 from .annotator_v8 import AnnotationAgentV8
+from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
 
@@ -14,7 +15,7 @@ def _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids=None):
 	return [int(row["id"]) for row in rows]
 
 
-def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None, model_name="gpt-5.6", surface_model=None, openai_client=None, progress=print):
+def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None, model_name="gpt-5.6", surface_model=None, id_model=None, openai_client=None, progress=print):
 	text = str(text or "").strip()
 	region = str(region or "").strip()
 	if not text:
@@ -70,7 +71,10 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	if not dialect_ids:
 		raise ValueError("Japanese -> Miyako translation requires an ordered --dialects list")
 	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
+	id_model = id_model or os.environ.get("NRDB_ID_MODEL")
 	progress("translate: Japanese -> Miyako | region={} dialects={} schema={}".format(region, dialects, annotation_schema_id))
+	if id_model:
+		progress("  ID critic: {}".format(id_model))
 	if surface_model:
 		progress("  surface critic: {}".format(surface_model))
 	item = {
@@ -91,7 +95,11 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	if surface_model:
 		agent = SurfaceCriticReverseAgent(
 			nrdb, model_name, client=openai_client, progress=progress,
-			surface_model_path=surface_model,
+			surface_model_path=surface_model, id_model_path=id_model,
+		)
+	elif id_model:
+		agent = IdCriticSyntaxAwareReverseSurfaceAgent(
+			nrdb, model_name, client=openai_client, progress=progress, id_model_path=id_model,
 		)
 	else:
 		agent = SyntaxAwareReverseSurfaceAgent(nrdb, model_name, client=openai_client, progress=progress)
