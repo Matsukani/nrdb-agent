@@ -1,6 +1,7 @@
 import argparse
 import json
 
+from .asr_review import review_asr_predictions
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
 from .runner import run_job
@@ -18,6 +19,23 @@ def _print_translation(value):
 	print("annotation:  {}".format(value.get("annotation", "")))
 	print("translation: {}".format(value.get("translation", "")))
 	print("confidence:  {} | decision: {}".format(value.get("confidence", ""), value.get("decision", "")))
+
+
+def _print_asr_review(value):
+	print("ASR REVIEW")
+	print("  rows scored:                 {}".format(value.get("rows_scored", 0)))
+	print("  top-1 UER:                   {}".format(_pct(value.get("top1_UER"))))
+	print("  deterministic baseline UER:  {}".format(_pct(value.get("baseline_UER"))))
+	print("  agent-selected UER:          {}".format(_pct(value.get("agent_UER"))))
+	print("  oracle UER:                  {}".format(_pct(value.get("oracle_UER"))))
+	print("  agent headroom recovered:    {}".format(_pct(value.get("agent_headroom_recovered"))))
+	print("  baseline headroom recovered: {}".format(_pct(value.get("baseline_headroom_recovered"))))
+	print("  rank-1 retained:             {}".format(value.get("rank1_retained", 0)))
+	print("  changed:                     {}".format(value.get("agent_changed", 0)))
+	print("  improved / harmful / neutral: {} / {} / {}".format(
+		value.get("improved_rows", 0), value.get("harmful_rows", 0), value.get("neutral_rows", 0),
+	))
+	print("  oracle-rank selections:      {}".format(value.get("oracle_rank_selected_rows", 0)))
 
 
 def _pct(value):
@@ -74,7 +92,7 @@ def _print_results(payload, show_sentences=0):
 				elif row.get("translation_jp"):
 					print("human trsl:  {}".format(row["translation_jp"]))
 				if row.get("gold_annotation"):
-					print("gold ann:    {}".format(row["gold_annotation"]))
+					print("gold ann:    {}".format(row.get("gold_annotation") or ""))
 			metrics = annotation_metrics(row.get("ai_annotation"), row.get("gold_annotation")) if row.get("gold_annotation") else None
 			linguistic_exact = int(metrics["linguistic_exact"]) if metrics is not None else "n/a"
 			raw_exact = row.get("exact_match") if row.get("exact_match") is not None else "n/a"
@@ -180,6 +198,21 @@ def main():
 	translate.add_argument("--model", default="gpt-5.6", help="LLM model name; does not select the nrdb-morph model")
 	translate.add_argument("--json", action="store_true", help="Print complete translation result as JSON")
 
+	asr_review = sub.add_parser("asr-review", help="Blindly rerank ASR n-best hypotheses with NRDB linguistic evidence")
+	asr_review.add_argument("predictions", help="predictions.tsv from nrdb-asr eval-manifest --nbest")
+	asr_review.add_argument("--out-dir", required=True)
+	asr_review.add_argument("--annotation-schema", dest="annotation_schema_id", type=int, required=True)
+	asr_review.add_argument("--region", required=True)
+	asr_review.add_argument("--dialect", dest="dialect_id", type=int, required=True)
+	asr_review.add_argument("--model", default="gpt-5.6")
+	asr_review.add_argument("--id-model", default=None, help="Optional nrdb-morph ID-sequence model; also reads NRDB_ID_MODEL")
+	asr_review.add_argument("--surface-model", default=None, help="Optional nrdb-morph surface model; also reads NRDB_SURFACE_MODEL")
+	asr_review.add_argument("--phrase-boundary-model", default=None, help="Optional nrdb-asr/nrdb-morph phrase-boundary model manifest")
+	asr_review.add_argument("--limit", type=int, default=None)
+	asr_review.add_argument("--max-candidates", type=int, default=None, help="Inspect only the first N hypotheses from each n-best list")
+	asr_review.add_argument("--no-llm", action="store_true", help="Run only the deterministic linguistic baseline")
+	asr_review.add_argument("--json", action="store_true", help="Print complete summary JSON")
+
 	show = sub.add_parser("show", help="Show audit summary for one job")
 	show.add_argument("job_id", type=int)
 
@@ -207,6 +240,14 @@ def main():
 			dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
 		)
 		_print_json(value) if args.json else _print_translation(value)
+	elif args.command == "asr-review":
+		value = review_asr_predictions(
+			nrdb, args.predictions, args.out_dir, args.annotation_schema_id, args.region, args.dialect_id,
+			model_name=args.model, id_model_path=args.id_model, surface_model_path=args.surface_model,
+			phrase_boundary_model_path=args.phrase_boundary_model, limit=args.limit,
+			max_candidates=args.max_candidates, use_llm=not args.no_llm,
+		)
+		_print_json(value) if args.json else _print_asr_review(value)
 	elif args.command == "show":
 		_print_json(_show_with_linguistic_metrics(nrdb, args.job_id))
 	elif args.command == "results":
