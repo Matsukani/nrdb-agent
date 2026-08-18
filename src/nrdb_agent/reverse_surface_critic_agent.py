@@ -1,7 +1,8 @@
 import json
 
+from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_agent import SURFACE_FORMAT
-from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent, surface_alignment_error
+from .reverse_surface_syntax_agent import surface_alignment_error
 from .surface_critic import SurfaceModelCritic
 
 
@@ -18,7 +19,7 @@ NRDB realization syntax is binding:
 - `眠nv;cvb-foc-ipf` has three realization slots: `[眠nv;cvb] [foc] [ipf]`.
 
 The statistical model provides context-conditioned surface suggestions and a dialect phonotactic score. Treat it as strong but non-absolute evidence:
-- Correct clear morphophonological/allomorphic errors when a requested-dialect form is strongly preferred in the exact left context.
+- Correct clear morphophonological/allomorphic errors when a requested-dialect form is strongly preferred in the exact left/right context.
 - Prefer directly attested requested-dialect realizations over an improvised form when the model strongly disagrees.
 - For a conflated label such as `消kv;cvb`, prefer the model's attested COMPLETE-SEGMENT realization; do not independently realize its atoms.
 - Do not blindly replace an acceptable idiomatic form merely because another attested form has a slightly higher score.
@@ -33,9 +34,9 @@ Return exactly one JSON object:
 """
 
 
-class SurfaceCriticReverseAgent(SyntaxAwareReverseSurfaceAgent):
-	def __init__(self, *args, surface_model_path=None, **kwargs):
-		super().__init__(*args, **kwargs)
+class SurfaceCriticReverseAgent(IdCriticSyntaxAwareReverseSurfaceAgent):
+	def __init__(self, *args, surface_model_path=None, id_model_path=None, **kwargs):
+		super().__init__(*args, id_model_path=id_model_path, **kwargs)
 		if not surface_model_path:
 			raise ValueError("surface critic requires surface_model_path")
 		self.surface_critic = SurfaceModelCritic(surface_model_path)
@@ -56,8 +57,8 @@ class SurfaceCriticReverseAgent(SyntaxAwareReverseSurfaceAgent):
 				"{}({:.2f})".format(value.get("form"), float(value.get("score") or 0.0))
 				for value in diagnostic.get("suggestions", [])[:3]
 			)
-			self.progress("    surface-model: {} after {!r} -> [{}] current={!r} gap={}".format(
-				diagnostic.get("label"), diagnostic.get("previous_surface"), suggestions,
+			self.progress("    surface-model: {} after {!r} before {!r} -> [{}] current={!r} gap={}".format(
+				diagnostic.get("label"), diagnostic.get("previous_surface"), diagnostic.get("next_label"), suggestions,
 				diagnostic.get("generated_form"),
 				"n/a" if diagnostic.get("score_gap") is None else "{:.2f}".format(float(diagnostic["score_gap"])),
 			))
