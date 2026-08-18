@@ -20,7 +20,7 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 	if max_items is not None:
 		items = items[:max(0, int(max_items))]
 	prompt_version = job.get("prompt_version")
-	if prompt_version == "reverse-v2":
+	if prompt_version == "reverse-v1" and target_dialects:
 		agent_class = ReverseSurfaceAgent
 	elif prompt_version == "reverse-v1":
 		agent_class = ReverseIdAgent
@@ -37,10 +37,10 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 		for index, item in enumerate(items, start=1):
 			progress("[{}/{}] sentence {}".format(index, len(items), item["sentence_id"]))
 			try:
-				if prompt_version in {"reverse-v1", "reverse-v2"}:
-					progress("  {}: Japanese={!r}".format(prompt_version, item.get("translation_jp") or ""))
-					if prompt_version == "reverse-v2":
-						progress("  reverse-v2: target dialect priority={}".format(job.get("target_dialect_ids") or [int(item["dialect_id"])]))
+				if prompt_version == "reverse-v1":
+					progress("  reverse-v1: Japanese={!r}".format(item.get("translation_jp") or ""))
+					if target_dialects:
+						progress("  reverse surface: target dialect priority={}".format(job["target_dialect_ids"]))
 					morph = None
 				else:
 					progress("  morph: analyze")
@@ -70,10 +70,10 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 				evidence=result["evidence"],
 				model_response_id=result.get("model_response_id"),
 			)
-			if prompt_version in {"reverse-v1", "reverse-v2"}:
+			if prompt_version == "reverse-v1":
 				progress("  reverse IDs: {!r}".format(result.get("annotation", "")))
-			if prompt_version == "reverse-v2":
-				progress("  reverse surface: {!r}".format(result.get("segmented", "")))
+				if target_dialects:
+					progress("  reverse surface: {!r}".format(result.get("segmented", "")))
 			if job.get("produce_translation"):
 				progress("  translation: {!r}".format(result.get("trsl_ai", "")))
 			progress("  done")
