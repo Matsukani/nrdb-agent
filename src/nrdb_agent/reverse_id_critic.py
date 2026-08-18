@@ -42,6 +42,36 @@ Return exactly one JSON object:
 """
 
 
+def _surprise_count(review):
+	if "strong_surprise_count" in review:
+		return int(review.get("strong_surprise_count") or 0)
+	value = review.get("strong_surprises", [])
+	if isinstance(value, list):
+		return len(value)
+	return int(value or 0)
+
+
+def _combined_mean_log_probability(review):
+	if "combined_mean_log_probability" in review:
+		return float(review.get("combined_mean_log_probability") or 0.0)
+	return float(review.get("mean_log_probability") or 0.0)
+
+
+def _alternative_rows(position):
+	values = position.get("alternatives") or position.get("top_observed") or []
+	rows = []
+	for value in values[:5]:
+		if isinstance(value, dict):
+			rows.append({
+				"token": value.get("token"),
+				"probability": value.get("probability"),
+				"count": value.get("count"),
+			})
+		elif isinstance(value, (list, tuple)) and len(value) >= 2:
+			rows.append({"token": value[0], "probability": value[1], "count": None})
+	return rows
+
+
 class IdSequenceCritic:
 	def __init__(self, model_path=None, model=None):
 		if model is None:
@@ -58,25 +88,31 @@ class IdSequenceCritic:
 		return self.model.score(annotation, int(annotation_schema_id))
 
 	def compact(self, review):
+		strong = review.get("strong_surprises", [])
+		strong = strong if isinstance(strong, list) else []
 		out = {
-			"mean_log_probability": review.get("mean_log_probability"),
-			"strong_surprises": review.get("strong_surprises", 0),
+			"mean_log_probability": _combined_mean_log_probability(review),
+			"strong_surprises": _surprise_count(review),
 			"representations": {},
 		}
-		for name, value in review.get("representations", {}).items():
+		for name in ("segment", "atom"):
+			value = review.get(name, {})
 			positions = []
-			for position in value.get("positions", []):
-				if not position.get("strong_surprise"):
+			for position in strong:
+				if position.get("representation") != name:
 					continue
 				positions.append({
-					"index": position.get("index"), "token": position.get("token"),
-					"context": position.get("context"), "order": position.get("order"),
+					"index": position.get("index"),
+					"token": position.get("token"),
+					"context": position.get("context"),
+					"order": position.get("order"),
 					"log_probability": position.get("log_probability"),
-					"top_observed": position.get("top_observed", [])[:5],
+					"threshold": position.get("threshold"),
+					"top_observed": _alternative_rows(position),
 				})
 			out["representations"][name] = {
 				"mean_log_probability": value.get("mean_log_probability"),
-				"strong_surprises": value.get("strong_surprises", 0),
+				"strong_surprises": len(positions),
 				"surprising_positions": positions[:8],
 			}
 		return out
@@ -94,18 +130,21 @@ class IdCriticSyntaxAwareReverseSurfaceAgent(SyntaxAwareReverseSurfaceAgent):
 		annotation = id_result["annotation"]
 		review = self.id_critic.review(annotation, int(job["annotation_schema_id"]))
 		compact = self.id_critic.compact(review)
-		self.progress("  id-model: mean_logp={:.3f} strong_surprises={}".format(
-			float(review.get("mean_log_probability") or 0.0), review.get("strong_surprises", 0),
-		))
+		initial_surprises = _surprise_count(review)
+		initial_mean = _combined_mean_log_probability(review)
+		self.progress("  id-model: mean_logp={:.3f} strong_surprises={}".format(initial_mean, initial_surprises))
 		for representation, values in compact.get("representations", {}).items():
 			for value in values.get("surprising_positions", []):
-				top = ", ".join("{}({})".format(entry.get("token"), entry.get("count")) for entry in value.get("top_observed", [])[:3])
+				top = ", ".join(
+					"{}({:.4f})".format(entry.get("token"), float(entry.get("probability") or 0.0))
+					for entry in value.get("top_observed", [])[:3]
+				)
 				self.progress("    id-model: {} token={!r} after {} -> [{}]".format(
 					representation, value.get("token"), value.get("context"), top,
 				))
 		id_result.setdefault("evidence", {})["id_sequence_review"] = compact
 		id_result["evidence"]["id_model_path"] = self.id_model_path
-		if not review.get("strong_surprises"):
+		if initial_surprises == 0:
 			return id_result
 
 		payload = {
@@ -128,20 +167,24 @@ class IdCriticSyntaxAwareReverseSurfaceAgent(SyntaxAwareReverseSurfaceAgent):
 			compact["revision_accepted"] = False
 			return id_result
 		candidate_review = self.id_critic.review(candidate_annotation, int(job["annotation_schema_id"]))
+		candidate_surprises = _surprise_count(candidate_review)
+		candidate_mean = _combined_mean_log_probability(candidate_review)
 		accept = bool(
-			candidate_review.get("strong_surprises", 0) < review.get("strong_surprises", 0)
-			or float(candidate_review.get("mean_log_probability") or -1e9) > float(review.get("mean_log_probability") or -1e9)
+			candidate_surprises < initial_surprises
+			or (candidate_surprises == initial_surprises and candidate_mean > initial_mean)
 		)
 		compact["revision_attempted"] = True
 		compact["candidate"] = self.id_critic.compact(candidate_review)
 		compact["revision_accepted"] = accept
 		if accept:
 			self.progress("  id-model: revision accepted surprises {}->{} mean_logp {:.3f}->{:.3f}".format(
-				review.get("strong_surprises", 0), candidate_review.get("strong_surprises", 0),
-				float(review.get("mean_log_probability") or 0.0), float(candidate_review.get("mean_log_probability") or 0.0),
+				initial_surprises, candidate_surprises, initial_mean, candidate_mean,
 			))
 			id_result["annotation"] = candidate_annotation
-			id_result["confidence"] = min(float(id_result.get("confidence", 0.0)), max(0.0, min(1.0, float(candidate.get("confidence", 0.0)))))
+			id_result["confidence"] = min(
+				float(id_result.get("confidence", 0.0)),
+				max(0.0, min(1.0, float(candidate.get("confidence", 0.0)))),
+			)
 		else:
 			self.progress("  id-model: revision rejected; keeping original IDs")
 		return id_result
