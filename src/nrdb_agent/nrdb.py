@@ -67,13 +67,16 @@ class NrdbClient:
 			exclude_job_id = self.exclude_job_id
 		return self._evidence_get("examples", label=label, annotation_schema_id=int(annotation_schema_id), exclude_sentence_id=int(exclude_sentence_id), exclude_job_id=int(exclude_job_id or 0), limit=int(limit))
 
-	def search_japanese_evidence(self, query, annotation_schema_id, exclude_sentence_id, exclude_job_id=None, region=None, limit=8):
+	def search_japanese_evidence(self, query, annotation_schema_id, exclude_sentence_id, exclude_job_id=None, region=None, dialect_ids=None, limit=8):
 		if exclude_job_id is None:
 			exclude_job_id = self.exclude_job_id
+		dialect_ids = dialect_ids or []
 		payload = self.http.get(self.reverse_evidence_url, {
 			"q": str(query or "").strip(), "annotation_schema_id": int(annotation_schema_id),
 			"exclude_sentence_id": int(exclude_sentence_id), "exclude_job_id": int(exclude_job_id or 0),
-			"region": str(region or "").strip(), "limit": int(limit),
+			"region": str(region or "").strip(),
+			"dialect_ids": ",".join(str(int(value)) for value in dialect_ids),
+			"limit": int(limit),
 		})
 		if not payload.get("success"):
 			raise RuntimeError(payload.get("error") or "NRDB reverse evidence API failed")
