@@ -74,11 +74,12 @@ class NrdbClient:
 			exclude_sentence_id=int(exclude_sentence_id), limit=int(limit),
 		)
 
-	def search_japanese_evidence(self, query, annotation_schema_id, exclude_sentence_id, region=None, limit=8):
+	def search_japanese_evidence(self, query, annotation_schema_id, exclude_sentence_id, exclude_dataset_id, region=None, limit=8):
 		payload = self.http.get(self.reverse_evidence_url, {
 			"q": str(query or "").strip(),
 			"annotation_schema_id": int(annotation_schema_id),
 			"exclude_sentence_id": int(exclude_sentence_id),
+			"exclude_dataset_id": int(exclude_dataset_id),
 			"region": str(region or "").strip(),
 			"limit": int(limit),
 		})
