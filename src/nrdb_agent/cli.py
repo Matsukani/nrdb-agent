@@ -36,7 +36,7 @@ def _parse_dialect_ids(value):
 def _print_results(payload, show_sentences=0):
 	job = payload["job"]
 	rows = payload.get("results", [])
-	reverse = job.get("prompt_version") in {"reverse-v1", "reverse-v2"}
+	reverse = job.get("prompt_version") == "reverse-v1"
 	print("job {} | dataset {} ({}) | status {} | model {} | prompt {}".format(job["id"], job["dataset_id"], job.get("dataset_name", ""), job.get("status", ""), job.get("model_name", ""), job.get("prompt_version", "")))
 	print("=" * 80)
 
@@ -47,7 +47,7 @@ def _print_results(payload, show_sentences=0):
 			if reverse:
 				print("Japanese:    {}".format(row.get("translation_jp") or row.get("gold_translation_jp") or ""))
 				print("pred IDs:    {}".format(row.get("ai_annotation") or ""))
-				if job.get("prompt_version") == "reverse-v2":
+				if row.get("ai_segmented"):
 					print("pred Miyako: {}".format(row.get("ai_segmented") or ""))
 				print("gold IDs:    {}".format(row.get("gold_annotation") or ""))
 				print("gold Miyako: {}".format(row.get("source_text") or ""))
@@ -117,7 +117,7 @@ def _show_with_linguistic_metrics(nrdb, job_id):
 	summary = nrdb.summary(job_id)
 	results = nrdb.job_results(job_id)
 	rows = results.get("results", [])
-	reverse = results.get("job", {}).get("prompt_version") in {"reverse-v1", "reverse-v2"}
+	reverse = results.get("job", {}).get("prompt_version") == "reverse-v1"
 	metrics = job_annotation_metrics(rows)
 	seg_metrics = job_segmentation_metrics(rows) if not reverse else {"sentences_scored": 0}
 	if metrics["sentences_scored"]:
@@ -148,7 +148,7 @@ def main():
 	create.add_argument("--limit", type=int, default=100)
 	create.add_argument("--seed", type=int, default=1)
 	create.add_argument("--model", default="gpt-5.6")
-	create.add_argument("--prompt-version", choices=["annotation-v1", "annotation-v2", "annotation-v3", "annotation-v4", "annotation-v5", "annotation-v6", "annotation-v7", "annotation-v8", "reverse-v1", "reverse-v2"], default="annotation-v8")
+	create.add_argument("--prompt-version", choices=["annotation-v1", "annotation-v2", "annotation-v3", "annotation-v4", "annotation-v5", "annotation-v6", "annotation-v7", "annotation-v8", "reverse-v1"], default="annotation-v8")
 	create.add_argument("--translate", action="store_true", help="Also generate a Japanese translation and store it as trsl_ai")
 	create.add_argument("--blind-translation", action="store_true", help="Generate trsl_ai without exposing translation_jp to the agent; implies --translate")
 
@@ -157,7 +157,7 @@ def main():
 	run = sub.add_parser("run", help="Run one existing job")
 	run.add_argument("job_id", type=int)
 	run.add_argument("--max-items", type=int, default=None, help="Process only this many items; useful for a smoke test")
-	run.add_argument("--target-dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...", help="Ordered dialect priority for reverse-v2 surface realization")
+	run.add_argument("--target-dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...", help="For reverse-v1, also realize Miyako surface forms using this ordered dialect priority")
 
 	show = sub.add_parser("show", help="Show audit summary for one job")
 	show.add_argument("job_id", type=int)
@@ -169,10 +169,10 @@ def main():
 	args = parser.parse_args()
 	nrdb = NrdbClient(args.agent_url, args.morph_url)
 	if args.command == "create":
-		if args.prompt_version in {"reverse-v1", "reverse-v2"} and args.mode != "blind_gold":
-			parser.error("reverse jobs currently require --mode blind_gold for hidden-gold evaluation")
-		if args.prompt_version in {"reverse-v1", "reverse-v2"} and (args.translate or args.blind_translation):
-			parser.error("reverse jobs use Japanese as input; do not use --translate")
+		if args.prompt_version == "reverse-v1" and args.mode != "blind_gold":
+			parser.error("reverse-v1 currently requires --mode blind_gold for hidden-gold evaluation")
+		if args.prompt_version == "reverse-v1" and (args.translate or args.blind_translation):
+			parser.error("reverse-v1 uses Japanese as input; do not use --translate")
 		_print_json(nrdb.create_job(args.dataset_id, args.mode, args.limit, args.model, args.prompt_version, args.seed, args.translate, args.blind_translation))
 	elif args.command == "list":
 		_print_json(nrdb.jobs())
