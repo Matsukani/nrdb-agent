@@ -5,12 +5,13 @@ from .annotator_v7 import AnnotationAgentV7
 from .annotator_v8 import AnnotationAgentV8
 from .reverse_agent import ReverseIdAgent
 from .reverse_surface_agent import ReverseSurfaceAgent
+from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 
 
 AGENT_JSON_ATTEMPTS = 3
 
 
-def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, target_dialects=None):
+def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, target_dialects=None, surface_model=None):
 	bundle = nrdb.job_items(job_id)
 	job = bundle["job"]
 	items = bundle["items"]
@@ -20,7 +21,9 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 	if max_items is not None:
 		items = items[:max(0, int(max_items))]
 	prompt_version = job.get("prompt_version")
-	if prompt_version == "reverse-v1" and target_dialects:
+	if prompt_version == "reverse-v1" and target_dialects and surface_model:
+		agent_class = SurfaceCriticReverseAgent
+	elif prompt_version == "reverse-v1" and target_dialects:
 		agent_class = ReverseSurfaceAgent
 	elif prompt_version == "reverse-v1":
 		agent_class = ReverseIdAgent
@@ -30,7 +33,10 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 		agent_class = AnnotationAgentV7
 	else:
 		agent_class = AnnotationAgent
-	agent = agent_class(nrdb, job["model_name"], client=openai_client, progress=progress)
+	agent_kwargs = {"client": openai_client, "progress": progress}
+	if agent_class is SurfaceCriticReverseAgent:
+		agent_kwargs["surface_model_path"] = surface_model
+	agent = agent_class(nrdb, job["model_name"], **agent_kwargs)
 	nrdb.set_job_status(job_id, "running")
 	completed = 0
 	try:
@@ -41,6 +47,8 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 					progress("  reverse-v1: Japanese={!r}".format(item.get("translation_jp") or ""))
 					if target_dialects:
 						progress("  reverse surface: target dialect priority={}".format(job["target_dialect_ids"]))
+						if surface_model:
+							progress("  reverse surface: nrdb-morph critic={}".format(surface_model))
 					morph = None
 				else:
 					progress("  morph: analyze")
