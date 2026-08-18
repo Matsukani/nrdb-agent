@@ -5,6 +5,7 @@ from .annotator import AnnotationAgent
 from .annotator_v7 import AnnotationAgentV7
 from .annotator_v8 import AnnotationAgentV8
 from .reverse_agent import ReverseIdAgent
+from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 
@@ -12,8 +13,9 @@ from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 AGENT_JSON_ATTEMPTS = 3
 
 
-def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, target_dialects=None, surface_model=None):
+def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, target_dialects=None, surface_model=None, id_model=None):
 	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
+	id_model = id_model or os.environ.get("NRDB_ID_MODEL")
 	bundle = nrdb.job_items(job_id)
 	job = bundle["job"]
 	items = bundle["items"]
@@ -25,6 +27,8 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 	prompt_version = job.get("prompt_version")
 	if prompt_version == "reverse-v1" and target_dialects and surface_model:
 		agent_class = SurfaceCriticReverseAgent
+	elif prompt_version == "reverse-v1" and target_dialects and id_model:
+		agent_class = IdCriticSyntaxAwareReverseSurfaceAgent
 	elif prompt_version == "reverse-v1" and target_dialects:
 		agent_class = SyntaxAwareReverseSurfaceAgent
 	elif prompt_version == "reverse-v1":
@@ -38,6 +42,9 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 	agent_kwargs = {"client": openai_client, "progress": progress}
 	if agent_class is SurfaceCriticReverseAgent:
 		agent_kwargs["surface_model_path"] = surface_model
+		agent_kwargs["id_model_path"] = id_model
+	elif agent_class is IdCriticSyntaxAwareReverseSurfaceAgent:
+		agent_kwargs["id_model_path"] = id_model
 	agent = agent_class(nrdb, job["model_name"], **agent_kwargs)
 	nrdb.set_job_status(job_id, "running")
 	completed = 0
@@ -49,6 +56,8 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 					progress("  reverse-v1: Japanese={!r}".format(item.get("translation_jp") or ""))
 					if target_dialects:
 						progress("  reverse surface: target dialect priority={}".format(job["target_dialect_ids"]))
+						if id_model:
+							progress("  reverse IDs: nrdb-morph critic={}".format(id_model))
 						if surface_model:
 							progress("  reverse surface: nrdb-morph critic={}".format(surface_model))
 					morph = None
