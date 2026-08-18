@@ -71,8 +71,11 @@ class SyntaxAwareReverseSurfaceAgent(ReverseSurfaceAgent):
 		candidate_error = surface_alignment_error(candidate.get("segmented"), annotation)
 		if candidate_error:
 			raise ValueError("reverse surface violates frozen annotation syntax after repair: {}".format(candidate_error))
+		candidate["confidence"] = min(float(surface_result.get("confidence", 0.0)), float(candidate.get("confidence", 0.0)))
 		candidate.setdefault("evidence", {})["syntax_repaired"] = True
 		candidate["evidence"]["syntax_error"] = error
+		candidate["evidence"]["pre_repair_segmented"] = surface_result.get("segmented") or ""
+		candidate["evidence"]["pre_repair_surface_evidence"] = surface_result.get("evidence", {})
 		self.progress("  surface-syntax: repaired={!r}".format(candidate.get("segmented") or ""))
 		return candidate
 
