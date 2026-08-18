@@ -9,22 +9,33 @@ You receive ONLY a Japanese sentence plus target dialect metadata. The original 
 
 Goal: predict the most defensible Miyako NRDB morphemic-ID annotation corresponding to the Japanese sentence. This first experiment predicts IDs only; do not generate Miyako surface forms.
 
+Core linguistic model: asymmetric dual lexical access.
+- Miyako/Ryukyuan normally supplies the morphosyntactic frame, while lexical material may come either from the local Ryukyuan lexicon or from the synchronically Japanese lexical reservoir.
+- The reserved namespace n: marks synchronically Japanese-layer material embedded in Ryukyuan discourse. It is NOT an etymology marker and it is NOT a closed dictionary inventory.
+- n: is productive: when Japanese lexical recruitment is justified, n:<Japanese lexical lemma or lexical expression> may be created directly from the Japanese input even if that exact n: ID has never occurred in NRDB. This is the ONE exception to the no-invented-ID rule.
+- Japanese lexical recruitment is especially expected for modern, institutional, technical, professional, standardized, numerical, temporal, measurement, proper-name/title and formulaic vocabulary, but it is not restricted to these domains.
+- A missing or weak local Ryukyuan lexical candidate is strong evidence for using n: rather than deleting the concept or forcing an unrelated local word.
+- Japanese is not merely a lexical-gap filler: if corpus evidence clearly favors an n: realization even where a local equivalent exists, the Japanese-layer choice is legitimate.
+- Prefer lexical recruitment inside Ryukyuan grammar over unnecessary full Japanese switching. In ordinary mixed realization, keep case, topic/focus, clause linkage, TAM and other grammatical packaging Ryukyuan whenever evidence supports it.
+- For multiword Japanese lexical expressions or institutional compounds, preserve a natural lexical unit and use one or more n: atoms as supported by corpus patterns; do not attach n: to Japanese inflectional endings or particles merely because they appear in the source sentence.
+
 Rules:
 - Use your Japanese linguistic competence directly. There is no separate Japanese parser in this baseline.
 - Before finalizing, call search_japanese_evidence for the important lexical predicates/arguments and, when useful, for a short informative Japanese construction. This tool searches bilingual lexical resources and translated annotated corpus examples.
-- Use lookup_id to verify candidate IDs once discovered.
+- Use lookup_id to verify ordinary candidate IDs once discovered.
 - Use corpus_examples for short ID constructions after you know relevant IDs.
-- Never infer lexical meaning from the visual spelling or kanji of an NRDB ID. IDs are identifiers, not glosses.
-- Never invent an NRDB ID. Every content ID must be licensed by retrieved lexical or corpus evidence. Grammatical IDs should likewise be supported by retrieved corpus patterns whenever possible.
-- Preserve Japanese predicate-argument structure, negation, tense/aspect, modality, quantification, information structure, and clause relations when evidence supports a Miyako counterpart.
+- Never infer lexical meaning from the visual spelling or kanji of an ordinary NRDB ID. IDs are identifiers, not glosses. The explicit exception is n:, whose Japanese lexical content is intentionally semantically transparent because n: denotes the Japanese lexical reservoir.
+- Never invent an ordinary local/global NRDB ID. Every non-n: content ID must be licensed by retrieved lexical or corpus evidence. Grammatical IDs should likewise be supported by retrieved corpus patterns whenever possible.
+- Preserve Japanese predicate-argument structure, negation, tense/aspect, modality, quantification, information structure, and clause relations while expressing them through attested Miyako/Ryukyuan grammatical structure where possible.
+- Do not omit a content concept merely because no local Miyako lexical entry is found; consider productive n: recruitment.
 - Output the predicted NRDB annotation in normal NRDB annotation syntax using spaces for phrases, hyphens for segments, and semicolons only for conflated atoms when supported by evidence.
 - This is an ID-transfer experiment. Do not output Miyako transcription or segmentation.
-- If evidence is genuinely insufficient, prefer UNCERTAIN rather than fabricating an analysis.
+- If grammatical evidence is genuinely insufficient, prefer UNCERTAIN rather than fabricating local grammar. Lack of a local lexical item alone is NOT a reason for failure when n: recruitment is available.
 - Do not ask for or infer the hidden Miyako source or gold annotation.
 - Do not produce chain-of-thought. Evidence notes must be concise and auditable.
 
 Return exactly one JSON object:
-{"annotation":"...","decision":"proposed|uncertain|failed","confidence":0.0,"evidence":{"note":"brief","japanese_queries":[],"ids_checked":[],"example_sentence_ids":[]}}
+{"annotation":"...","decision":"proposed|uncertain|failed","confidence":0.0,"evidence":{"note":"brief","japanese_queries":[],"ids_checked":[],"japanese_reservoir_ids":[],"example_sentence_ids":[]}}
 """
 
 REVERSE_FORMAT = {
@@ -43,9 +54,10 @@ REVERSE_FORMAT = {
 					"note": {"type": "string"},
 					"japanese_queries": {"type": "array", "items": {"type": "string"}},
 					"ids_checked": {"type": "array", "items": {"type": "string"}},
+					"japanese_reservoir_ids": {"type": "array", "items": {"type": "string"}},
 					"example_sentence_ids": {"type": "array", "items": {"type": "integer"}},
 				},
-				"required": ["note", "japanese_queries", "ids_checked", "example_sentence_ids"],
+				"required": ["note", "japanese_queries", "ids_checked", "japanese_reservoir_ids", "example_sentence_ids"],
 				"additionalProperties": False,
 			},
 		},
@@ -57,7 +69,7 @@ REVERSE_FORMAT = {
 SEARCH_JAPANESE_TOOL = {
 	"type": "function",
 	"name": "search_japanese_evidence",
-	"description": "Search NRDB bilingual lexical resources and translated annotated corpus examples from a short Japanese word or phrase. Use this to discover Miyako NRDB IDs from Japanese meaning.",
+	"description": "Search NRDB bilingual lexical resources and translated annotated corpus examples from a short Japanese word or phrase. Use this to discover local Miyako IDs and attested n: Japanese-layer choices from Japanese meaning. If no suitable local or attested n: lexical entry exists, productive n: recruitment may still be used for a Japanese lexical lemma.",
 	"parameters": {
 		"type": "object",
 		"properties": {
@@ -142,7 +154,7 @@ class ReverseIdAgent(AnnotationAgent):
 		final_input = list(base_input)
 		if evidence_summary:
 			final_input.append({"role": "user", "content": "Retrieved compact NRDB evidence:\n" + json.dumps(evidence_summary[-6:], ensure_ascii=False)})
-		final_input.append({"role": "user", "content": "Evidence gathering is finished ({}). Do not call tools. Return the best conservative Miyako NRDB ID annotation now, or UNCERTAIN if evidence is insufficient.".format(reason)})
+		final_input.append({"role": "user", "content": "Evidence gathering is finished ({}). Do not call tools. Return the best conservative Miyako NRDB ID annotation now. Remember that n: is a productive Japanese lexical reservoir: if a Japanese lexical concept lacks a convincing local realization, recruit it as n:<Japanese lexical lemma> and keep the surrounding grammar Ryukyuan. Return UNCERTAIN only when the grammatical analysis itself remains insufficient.".format(reason)})
 		last_error = None
 		for attempt, budget in enumerate((1200, 1800), start=1):
 			self.progress("  reverse-v1: forced finalization attempt {}".format(attempt))
@@ -181,7 +193,7 @@ class ReverseIdAgent(AnnotationAgent):
 			if not calls:
 				if not searched_japanese:
 					response = self._create_response(
-						base_input + [{"role": "user", "content": "Before finalizing you must call search_japanese_evidence for the important Japanese lexical material."}],
+						base_input + [{"role": "user", "content": "Before finalizing you must call search_japanese_evidence for the important Japanese lexical material. If a concept has no convincing local lexical realization, remember that productive n: recruitment is available."}],
 						REVERSE_INSTRUCTIONS, tools=REVERSE_TOOLS, max_output_tokens=900,
 					)
 					continue
@@ -203,7 +215,7 @@ class ReverseIdAgent(AnnotationAgent):
 				arguments = json.loads(call.arguments)
 				self.progress("    -> {}({})".format(call.name, self._trace_args_reverse(call.name, arguments)))
 				if evidence_calls >= self.max_reverse_evidence_calls:
-					compact = {"budget_exhausted": True, "message": "Reverse evidence budget exhausted; finalize conservatively."}
+					compact = {"budget_exhausted": True, "message": "Reverse evidence budget exhausted; finalize conservatively. Productive n: recruitment remains available for unresolved Japanese lexical concepts."}
 				else:
 					tool_result = self._tool_result_reverse(call.name, arguments, item, int(job["annotation_schema_id"]))
 					compact = self._compact_reverse(call.name, tool_result)
