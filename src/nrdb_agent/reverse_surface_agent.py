@@ -13,15 +13,20 @@ Goal: realize that ID sequence as a plausible segmented Miyako surface string fo
 Core lexical-layer rule:
 - Ordinary non-n: lexical IDs belong to the local Ryukyuan lexical system. Realize them with attested local forms; do not replace them with Japanese merely because the ID label contains Japanese-readable characters.
 - IDs beginning with n: belong to the synchronically Japanese lexical reservoir. Realize them as Japanese-layer lexical forms embedded inside the Ryukyuan morphosyntactic frame.
-- For n: IDs, first use attested n: trsc2 corpus realizations when available. If the exact n: item is productively recruited and has no attested surface in NRDB, it is legitimate to use the ordinary Japanese pronunciation of the lexical material after n:, rendered conservatively in the project's trsc2-style romanization. This is not hallucinating a Miyako root: the n: namespace explicitly licenses Japanese lexical recruitment.
+- For n: IDs, first use attested n: trsc2 corpus realizations when available. If the exact n: item is productively recruited and has no attested surface in NRDB, it is legitimate to use the ordinary Japanese pronunciation of the lexical material after n:, rendered conservatively in the project's trsc2-style romanization.
 - Do not phonologically localize an n: item into an ordinary Ryukyuan lexical form unless corpus evidence shows that exact n: realization. n: marks the Japanese lexical layer, not historical Japanese origin.
-- Keep surrounding grammatical morphology Ryukyuan whenever the frozen annotation is Ryukyuan: e.g. an n: noun may take local case, topic, focus, genitive, number or other morphology. Do not switch the whole phrase to Japanese grammar merely because its lexical head is n:.
+- Keep surrounding grammatical morphology Ryukyuan whenever the frozen annotation is Ryukyuan.
+
+Two-pass dialect policy:
+- ID/grammar inference has already pooled evidence across the annotation schema's target region, with the requested dialects only mildly preferred. Do not reinterpret that frozen ID sequence here.
+- Surface realization is much stricter. If surface evidence exists in any requested dialect, surface_forms_for_id returns ONLY requested-dialect evidence for that ID. Use the requested dialects in their supplied order.
+- Same-region forms are returned only when no requested-dialect surface evidence exists for that ID. Treat such evidence as an explicit fallback and record it in fallback_ids.
+- Never use an out-of-region surface form.
 
 Rules:
 - Retrieval first. Use surface_forms_for_id to obtain attested surface realizations for lexical/content IDs and grammatical/local IDs.
 - Corpus surface evidence is drawn only from the romanized trsc2 segmented layer and includes sentence (sen), text (txt), and lexical-example (lxs) corpus sources. Prefer frequent attested trsc2 corpus realizations, especially for grammatical/local IDs.
 - Lexicon forms are secondary complementary evidence, especially useful for lexical roots.
-- Dialect priorities are ordered. Prefer dialect 1; use dialect 2 only when an appropriate form is unavailable in dialect 1; continue in order. Same-region forms are fallback evidence after the explicit list.
 - Use corpus_examples on short ID constructions to recover target-language grammatical packaging, ordering, and morphophonological realization.
 - Never copy a held-out test sentence; both corpus-example and surface-form evidence exclude the evaluation cohort.
 - Do not invent an ordinary local lexical root when an attested requested-dialect or fallback form is available. Productive Japanese realization is allowed only for frozen n: IDs.
@@ -63,7 +68,7 @@ SURFACE_FORMAT = {
 SURFACE_FORM_TOOL = {
 	"type": "function",
 	"name": "surface_forms_for_id",
-	"description": "Retrieve attested trsc2 corpus surface realizations (sen/txt/lxs) plus lexicon forms for one exact NRDB ID, ordered by requested dialect priority, same-region fallback, and corpus frequency. A zero result for an n: ID does not prohibit productive Japanese lexical realization.",
+	"description": "Retrieve annotation-schema-scoped attested trsc2 corpus surfaces (sen/txt/lxs) plus lexicon forms for one exact NRDB ID. Requested dialects are an aggressive surface scope: if any requested-dialect evidence exists, regional alternatives are suppressed; same-region evidence is returned only as fallback. A zero result for an n: ID does not prohibit productive Japanese lexical realization.",
 	"parameters": {
 		"type": "object",
 		"properties": {"label": {"type": "string", "maxLength": 128}},
@@ -89,6 +94,17 @@ class ReverseSurfaceAgent(ReverseIdAgent):
 	def __init__(self, *args, max_surface_evidence_calls=8, **kwargs):
 		super().__init__(*args, **kwargs)
 		self.max_surface_evidence_calls = int(max_surface_evidence_calls)
+		self._id_pass_dialect_ids = []
+
+	def _tool_result_reverse(self, name, arguments, item, schema_id):
+		if name == "search_japanese_evidence":
+			return self.nrdb.search_japanese_evidence(
+				arguments["query"], schema_id, item["sentence_id"],
+				region=item.get("dialect_region"),
+				dialect_ids=self._id_pass_dialect_ids,
+				limit=min(8, arguments["limit"]),
+			)
+		return super()._tool_result_reverse(name, arguments, item, schema_id)
 
 	def _parse_surface(self, text):
 		payload = json.loads((text or "").strip())
@@ -113,12 +129,9 @@ class ReverseSurfaceAgent(ReverseIdAgent):
 			corpus_forms = []
 			for value in result.get("corpus_forms", [])[:10]:
 				corpus_forms.append({
-					"surface": value.get("surface"),
-					"count": value.get("count"),
-					"dialect_id": value.get("dialect_id"),
-					"dialect_name": value.get("dialect_name"),
-					"dialect_region": value.get("dialect_region"),
-					"source_kinds": value.get("source_kinds"),
+					"surface": value.get("surface"), "count": value.get("count"),
+					"dialect_id": value.get("dialect_id"), "dialect_name": value.get("dialect_name"),
+					"dialect_region": value.get("dialect_region"), "source_kinds": value.get("source_kinds"),
 					"example_sentence_id": value.get("example_sentence_id"),
 				})
 			lexicon_forms = []
@@ -130,13 +143,12 @@ class ReverseSurfaceAgent(ReverseIdAgent):
 					"form2_seg": value.get("form2_seg"), "meaning_jp": value.get("meaning_jp"),
 				})
 			return {
-				"label": result.get("label"),
-				"dialect_ids": result.get("dialect_ids"),
-				"region": result.get("region"),
+				"label": result.get("label"), "annotation_schema_id": result.get("annotation_schema_id"),
+				"dialect_ids": result.get("dialect_ids"), "region": result.get("region"),
+				"surface_scope": result.get("surface_scope"),
 				"transcription_layer": result.get("transcription_layer"),
 				"corpus_source_kinds": result.get("corpus_source_kinds"),
-				"corpus_forms": corpus_forms,
-				"lexicon_forms": lexicon_forms,
+				"corpus_forms": corpus_forms, "lexicon_forms": lexicon_forms,
 			}
 		return _compact_tool_result(name, result)
 
@@ -178,8 +190,9 @@ class ReverseSurfaceAgent(ReverseIdAgent):
 					calls_used += 1
 					evidence.append({"tool": call.name, "arguments": arguments, "result": compact})
 					if call.name == "surface_forms_for_id":
-						self.progress("    <- surface_forms_for_id({}): corpus={} lexicon={}".format(
-							arguments.get("label"), len(result.get("corpus_forms", [])), len(result.get("lexicon_forms", [])),
+						self.progress("    <- surface_forms_for_id({}): scope={} corpus={} lexicon={}".format(
+							arguments.get("label"), result.get("surface_scope"),
+							len(result.get("corpus_forms", [])), len(result.get("lexicon_forms", [])),
 						))
 					else:
 						self.progress("    <- corpus_examples: {} example(s)".format(len(result.get("examples", []))))
@@ -191,11 +204,12 @@ class ReverseSurfaceAgent(ReverseIdAgent):
 		final_input = list(base_input)
 		if evidence:
 			final_input.append({"role": "user", "content": "Retrieved surface evidence:\n" + json.dumps(evidence[-8:], ensure_ascii=False)})
-		final_input.append({"role": "user", "content": "Evidence gathering is finished. Do not call tools. Return the most conservative trsc2 segmented realization now. For any frozen n: ID lacking attested surface evidence, realize its Japanese lexical content with ordinary Japanese pronunciation in trsc2 and embed it in the surrounding Ryukyuan grammar."})
+		final_input.append({"role": "user", "content": "Evidence gathering is finished. Do not call tools. Return the most conservative trsc2 segmented realization now. Respect requested-dialect evidence whenever surface_scope=requested_dialects; use regional forms only when surface_scope=region_fallback. For any frozen n: ID lacking attested surface evidence, realize its Japanese lexical content with ordinary Japanese pronunciation in trsc2 and embed it in the surrounding Ryukyuan grammar."})
 		response = self._create_response(final_input, SURFACE_INSTRUCTIONS, tools=[], max_output_tokens=1200, text_format=SURFACE_FORMAT)
 		return self._parse_surface(response.output_text)
 
 	def annotate(self, item, job, morph_result=None):
+		self._id_pass_dialect_ids = job.get("target_dialect_ids") or [int(item["dialect_id"])]
 		id_job = dict(job)
 		id_job["prompt_version"] = "reverse-v1"
 		id_result = super().annotate(item, id_job, morph_result)
