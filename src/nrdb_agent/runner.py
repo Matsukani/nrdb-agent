@@ -4,20 +4,25 @@ from .annotator import AnnotationAgent
 from .annotator_v7 import AnnotationAgentV7
 from .annotator_v8 import AnnotationAgentV8
 from .reverse_agent import ReverseIdAgent
+from .reverse_surface_agent import ReverseSurfaceAgent
 
 
 AGENT_JSON_ATTEMPTS = 3
 
 
-def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
+def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, target_dialects=None):
 	bundle = nrdb.job_items(job_id)
 	job = bundle["job"]
 	items = bundle["items"]
 	nrdb.exclude_job_id = int(job_id)
+	if target_dialects:
+		job["target_dialect_ids"] = [int(value) for value in target_dialects]
 	if max_items is not None:
 		items = items[:max(0, int(max_items))]
 	prompt_version = job.get("prompt_version")
-	if prompt_version == "reverse-v1":
+	if prompt_version == "reverse-v2":
+		agent_class = ReverseSurfaceAgent
+	elif prompt_version == "reverse-v1":
 		agent_class = ReverseIdAgent
 	elif prompt_version == "annotation-v8":
 		agent_class = AnnotationAgentV8
@@ -32,8 +37,10 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 		for index, item in enumerate(items, start=1):
 			progress("[{}/{}] sentence {}".format(index, len(items), item["sentence_id"]))
 			try:
-				if prompt_version == "reverse-v1":
-					progress("  reverse-v1: Japanese={!r}".format(item.get("translation_jp") or ""))
+				if prompt_version in {"reverse-v1", "reverse-v2"}:
+					progress("  {}: Japanese={!r}".format(prompt_version, item.get("translation_jp") or ""))
+					if prompt_version == "reverse-v2":
+						progress("  reverse-v2: target dialect priority={}".format(job.get("target_dialect_ids") or [int(item["dialect_id"])]))
 					morph = None
 				else:
 					progress("  morph: analyze")
@@ -46,9 +53,7 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 					except json.JSONDecodeError as error:
 						if attempt >= AGENT_JSON_ATTEMPTS:
 							raise
-						progress("  llm: malformed/truncated JSON (attempt {}/{}): {}; retrying sentence".format(
-							attempt, AGENT_JSON_ATTEMPTS, error,
-						))
+						progress("  llm: malformed/truncated JSON (attempt {}/{}): {}; retrying sentence".format(attempt, AGENT_JSON_ATTEMPTS, error))
 			except Exception as error:
 				progress("  infrastructure failure: {}".format(error))
 				raise
@@ -65,8 +70,10 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 				evidence=result["evidence"],
 				model_response_id=result.get("model_response_id"),
 			)
-			if prompt_version == "reverse-v1":
+			if prompt_version in {"reverse-v1", "reverse-v2"}:
 				progress("  reverse IDs: {!r}".format(result.get("annotation", "")))
+			if prompt_version == "reverse-v2":
+				progress("  reverse surface: {!r}".format(result.get("segmented", "")))
 			if job.get("produce_translation"):
 				progress("  translation: {!r}".format(result.get("trsl_ai", "")))
 			progress("  done")
