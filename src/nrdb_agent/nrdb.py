@@ -11,6 +11,7 @@ class NrdbClient:
 		self.results_url = os.environ.get("NRDB_AGENT_RESULTS_URL") or base_url + "/agent_results.php"
 		self.form_support_url = os.environ.get("NRDB_AGENT_FORM_SUPPORT_URL") or base_url + "/agent_form_support.php"
 		self.reverse_evidence_url = os.environ.get("NRDB_AGENT_REVERSE_EVIDENCE_URL") or base_url + "/agent_reverse_evidence.php"
+		self.region_dialects_url = os.environ.get("NRDB_AGENT_REGION_DIALECTS_URL") or base_url + "/agent_region_dialects.php"
 		self.morph_url = (morph_url or os.environ.get("NRDB_MORPH_URL") or "http://127.0.0.1:8765").rstrip("/")
 		self.http = JsonHttpClient(timeout=timeout)
 		self.exclude_job_id = 0
@@ -53,6 +54,15 @@ class NrdbClient:
 		if not payload.get("success"):
 			raise RuntimeError(payload.get("error") or "NRDB agent results API failed")
 		return payload
+
+	def region_dialects(self, region, annotation_schema_id):
+		payload = self.http.get(self.region_dialects_url, {
+			"region": str(region or "").strip(),
+			"annotation_schema_id": int(annotation_schema_id),
+		})
+		if not payload.get("success"):
+			raise RuntimeError(payload.get("error") or "NRDB region dialect lookup failed")
+		return payload.get("dialects", [])
 
 	def lookup_id(self, label, annotation_schema_id):
 		return self._evidence_get("lookup_id", label=label, annotation_schema_id=int(annotation_schema_id))
