@@ -11,14 +11,16 @@ You receive a Japanese sentence and a FROZEN predicted Miyako NRDB ID annotation
 Goal: realize that ID sequence as a plausible segmented Miyako surface string for the requested dialect priorities.
 
 Rules:
-- Retrieval first. Use surface_forms_for_id to obtain attested forms for lexical/content IDs and any grammatical IDs whose realization is unclear.
+- Retrieval first. Use surface_forms_for_id to obtain attested surface realizations for lexical/content IDs and grammatical/local IDs.
+- Corpus surface evidence is drawn only from the romanized trsc2 segmented layer and includes sentence (sen), text (txt), and lexical-example (lxs) corpus sources. Prefer frequent attested trsc2 corpus realizations, especially for grammatical/local IDs.
+- Lexicon forms are secondary complementary evidence, especially useful for lexical roots.
 - Dialect priorities are ordered. Prefer dialect 1; use dialect 2 only when an appropriate form is unavailable in dialect 1; continue in order. Same-region forms are fallback evidence after the explicit list.
 - Use corpus_examples on short ID constructions to recover target-language grammatical packaging, ordering, and morphophonological realization.
-- Never copy a held-out test sentence; the evidence service excludes the evaluation cohort.
+- Never copy a held-out test sentence; both corpus-example and surface-form evidence exclude the evaluation cohort.
 - Do not invent a lexical root when an attested requested-dialect or fallback form is available.
 - Limited productive inflection/morphophonology may be composed from attested forms and corpus patterns, but mark uncertainty when evidence is weak.
 - Keep the frozen annotation unchanged even if you suspect it is imperfect; this experiment separates ID transfer from surface realization.
-- Return a segmented Miyako candidate using spaces for phrases and hyphens for morpheme boundaries where recoverable.
+- Return a segmented Miyako candidate in trsc2-style romanization, using spaces for phrases and hyphens for morpheme boundaries where recoverable.
 - Do not produce chain-of-thought.
 
 Return exactly one JSON object:
@@ -54,7 +56,7 @@ SURFACE_FORMAT = {
 SURFACE_FORM_TOOL = {
 	"type": "function",
 	"name": "surface_forms_for_id",
-	"description": "Retrieve attested lexical surface forms for one exact NRDB ID, ordered by the requested dialect priority and then same-region fallback.",
+	"description": "Retrieve attested trsc2 corpus surface realizations (sen/txt/lxs) plus lexicon forms for one exact NRDB ID, ordered by requested dialect priority, same-region fallback, and corpus frequency.",
 	"parameters": {
 		"type": "object",
 		"properties": {"label": {"type": "string", "maxLength": 128}},
@@ -101,15 +103,34 @@ class ReverseSurfaceAgent(ReverseIdAgent):
 
 	def _compact_surface(self, name, result):
 		if name == "surface_forms_for_id":
-			forms = []
-			for value in result.get("forms", [])[:10]:
-				forms.append({
+			corpus_forms = []
+			for value in result.get("corpus_forms", [])[:10]:
+				corpus_forms.append({
+					"surface": value.get("surface"),
+					"count": value.get("count"),
+					"dialect_id": value.get("dialect_id"),
+					"dialect_name": value.get("dialect_name"),
+					"dialect_region": value.get("dialect_region"),
+					"source_kinds": value.get("source_kinds"),
+					"example_sentence_id": value.get("example_sentence_id"),
+				})
+			lexicon_forms = []
+			for value in result.get("lexicon_forms", [])[:6]:
+				lexicon_forms.append({
 					"dialect_id": value.get("dialect_id"), "dialect_name": value.get("dialect_name"),
 					"dialect_region": value.get("dialect_region"), "form1": value.get("form1"),
 					"form2": value.get("form2"), "form1_seg": value.get("form1_seg"),
 					"form2_seg": value.get("form2_seg"), "meaning_jp": value.get("meaning_jp"),
 				})
-			return {"label": result.get("label"), "dialect_ids": result.get("dialect_ids"), "region": result.get("region"), "forms": forms}
+			return {
+				"label": result.get("label"),
+				"dialect_ids": result.get("dialect_ids"),
+				"region": result.get("region"),
+				"transcription_layer": result.get("transcription_layer"),
+				"corpus_source_kinds": result.get("corpus_source_kinds"),
+				"corpus_forms": corpus_forms,
+				"lexicon_forms": lexicon_forms,
+			}
 		return _compact_tool_result(name, result)
 
 	def _realize_surface(self, item, job, id_result):
@@ -149,7 +170,9 @@ class ReverseSurfaceAgent(ReverseIdAgent):
 					calls_used += 1
 					evidence.append({"tool": call.name, "arguments": arguments, "result": compact})
 					if call.name == "surface_forms_for_id":
-						self.progress("    <- surface_forms_for_id({}): {} form(s)".format(arguments.get("label"), len(result.get("forms", []))))
+						self.progress("    <- surface_forms_for_id({}): corpus={} lexicon={}".format(
+							arguments.get("label"), len(result.get("corpus_forms", [])), len(result.get("lexicon_forms", [])),
+						))
 					else:
 						self.progress("    <- corpus_examples: {} example(s)".format(len(result.get("examples", []))))
 				continuation.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(compact, ensure_ascii=False)})
@@ -160,7 +183,7 @@ class ReverseSurfaceAgent(ReverseIdAgent):
 		final_input = list(base_input)
 		if evidence:
 			final_input.append({"role": "user", "content": "Retrieved surface evidence:\n" + json.dumps(evidence[-8:], ensure_ascii=False)})
-		final_input.append({"role": "user", "content": "Evidence gathering is finished. Do not call tools. Return the most conservative attested-form-based segmented Miyako realization now."})
+		final_input.append({"role": "user", "content": "Evidence gathering is finished. Do not call tools. Return the most conservative attested-form-based trsc2 segmented Miyako realization now."})
 		response = self._create_response(final_input, SURFACE_INSTRUCTIONS, tools=[], max_output_tokens=1200, text_format=SURFACE_FORMAT)
 		return self._parse_surface(response.output_text)
 
