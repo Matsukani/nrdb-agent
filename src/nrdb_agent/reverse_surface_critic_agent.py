@@ -1,6 +1,7 @@
 import json
 
-from .reverse_surface_agent import ReverseSurfaceAgent, SURFACE_FORMAT
+from .reverse_surface_agent import SURFACE_FORMAT
+from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent, surface_alignment_error
 from .surface_critic import SurfaceModelCritic
 
 
@@ -8,13 +9,22 @@ SURFACE_REVIEW_INSTRUCTIONS = """You are the final surface-only reviewer for NRD
 
 The Miyako NRDB ID annotation is FROZEN and must not be revised. You receive an initial segmented trsc2 realization plus soft statistical evidence from an nrdb-morph surface model trained on held-out-safe human annotations.
 
+NRDB realization syntax is binding:
+- SPACE separates phrases.
+- HYPHEN (-) separates independently realized annotation segments.
+- SEMICOLON (;) conflates multiple annotation atoms inside ONE annotation segment and therefore ONE surface segment.
+- Never split a semicolon-conflated annotation segment into multiple hyphenated surface morphemes.
+- `消kv;cvb` is one realization slot, not `消kv` plus a separate `cvb` slot.
+- `眠nv;cvb-foc-ipf` has three realization slots: `[眠nv;cvb] [foc] [ipf]`.
+
 The statistical model provides context-conditioned surface suggestions and a dialect phonotactic score. Treat it as strong but non-absolute evidence:
 - Correct clear morphophonological/allomorphic errors when a requested-dialect form is strongly preferred in the exact left context.
 - Prefer directly attested requested-dialect realizations over an improvised form when the model strongly disagrees.
+- For a conflated label such as `消kv;cvb`, prefer the model's attested COMPLETE-SEGMENT realization; do not independently realize its atoms.
 - Do not blindly replace an acceptable idiomatic form merely because another attested form has a slightly higher score.
 - Do not change lexical or grammatical IDs, phrase structure, semantic content, or switch an ordinary local ID into n: or vice versa.
 - Keep n: Japanese lexical material in the Japanese layer; the critic intentionally treats n: interiors as opaque to Miyako phonotactics.
-- Return the same number of phrases and morpheme segments as the frozen annotation.
+- Return exactly the same number of phrases and hyphen-delimited surface segments as the frozen annotation.
 - Return trsc2-style romanization only.
 - Do not produce chain-of-thought.
 
@@ -23,7 +33,7 @@ Return exactly one JSON object:
 """
 
 
-class SurfaceCriticReverseAgent(ReverseSurfaceAgent):
+class SurfaceCriticReverseAgent(SyntaxAwareReverseSurfaceAgent):
 	def __init__(self, *args, surface_model_path=None, **kwargs):
 		super().__init__(*args, **kwargs)
 		if not surface_model_path:
@@ -67,6 +77,13 @@ class SurfaceCriticReverseAgent(ReverseSurfaceAgent):
 			SURFACE_REVIEW_INSTRUCTIONS, tools=[], max_output_tokens=1000, text_format=SURFACE_FORMAT,
 		)
 		candidate = self._parse_surface(response.output_text)
+		candidate_syntax_error = surface_alignment_error(candidate.get("segmented"), annotation)
+		if candidate_syntax_error:
+			self.progress("  surface-model: revision rejected; annotation syntax violation: {}".format(candidate_syntax_error))
+			review["revision_attempted"] = True
+			review["revision_accepted"] = False
+			review["candidate_syntax_error"] = candidate_syntax_error
+			return result, review
 		candidate_review = self.surface_critic.review(
 			candidate["segmented"], annotation, dialect_ids, int(job["annotation_schema_id"]),
 		)
