@@ -5,7 +5,7 @@ from .annotator import AnnotationAgent
 from .annotator_v7 import AnnotationAgentV7
 from .annotator_v8 import AnnotationAgentV8
 from .reverse_agent import ReverseIdAgent
-from .reverse_surface_agent import ReverseSurfaceAgent
+from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 
 
@@ -26,7 +26,7 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 	if prompt_version == "reverse-v1" and target_dialects and surface_model:
 		agent_class = SurfaceCriticReverseAgent
 	elif prompt_version == "reverse-v1" and target_dialects:
-		agent_class = ReverseSurfaceAgent
+		agent_class = SyntaxAwareReverseSurfaceAgent
 	elif prompt_version == "reverse-v1":
 		agent_class = ReverseIdAgent
 	elif prompt_version == "annotation-v8":
