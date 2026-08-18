@@ -79,13 +79,16 @@ class NrdbClient:
 			raise RuntimeError(payload.get("error") or "NRDB reverse evidence API failed")
 		return payload
 
-	def surface_forms_for_id(self, label, annotation_schema_id, dialect_ids, region=None):
+	def surface_forms_for_id(self, label, annotation_schema_id, dialect_ids, region=None, exclude_job_id=None):
+		if exclude_job_id is None:
+			exclude_job_id = self.exclude_job_id
 		payload = self.http.get(self.reverse_evidence_url, {
 			"action": "surface_forms",
 			"label": str(label or "").strip(),
 			"annotation_schema_id": int(annotation_schema_id),
 			"dialect_ids": ",".join(str(int(value)) for value in dialect_ids),
 			"region": str(region or "").strip(),
+			"exclude_job_id": int(exclude_job_id or 0),
 		})
 		if not payload.get("success"):
 			raise RuntimeError(payload.get("error") or "NRDB reverse surface evidence API failed")
