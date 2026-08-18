@@ -3,6 +3,7 @@ import json
 from .annotator import AnnotationAgent
 from .annotator_v7 import AnnotationAgentV7
 from .annotator_v8 import AnnotationAgentV8
+from .reverse_agent import ReverseIdAgent
 
 
 AGENT_JSON_ATTEMPTS = 3
@@ -15,7 +16,9 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 	if max_items is not None:
 		items = items[:max(0, int(max_items))]
 	prompt_version = job.get("prompt_version")
-	if prompt_version == "annotation-v8":
+	if prompt_version == "reverse-v1":
+		agent_class = ReverseIdAgent
+	elif prompt_version == "annotation-v8":
 		agent_class = AnnotationAgentV8
 	elif prompt_version == "annotation-v7":
 		agent_class = AnnotationAgentV7
@@ -28,9 +31,13 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 		for index, item in enumerate(items, start=1):
 			progress("[{}/{}] sentence {}".format(index, len(items), item["sentence_id"]))
 			try:
-				progress("  morph: analyze")
-				morph = nrdb.morph_analyze(item["text"], item["dialect_id"], job["annotation_schema_id"])
-				progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
+				if prompt_version == "reverse-v1":
+					progress("  reverse-v1: Japanese={!r}".format(item.get("translation_jp") or ""))
+					morph = None
+				else:
+					progress("  morph: analyze")
+					morph = nrdb.morph_analyze(item["text"], item["dialect_id"], job["annotation_schema_id"])
+					progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
 				for attempt in range(1, AGENT_JSON_ATTEMPTS + 1):
 					try:
 						result = agent.annotate(item, job, morph)
@@ -49,7 +56,7 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print):
 			nrdb.save_result(
 				job_id=job_id,
 				sentence_id=item["sentence_id"],
-				segmented=result["segmented"],
+				segmented=result.get("segmented", ""),
 				annotation=result["annotation"],
 				trsl_ai=result.get("trsl_ai", "") if job.get("produce_translation") else "",
 				decision=result["decision"],
