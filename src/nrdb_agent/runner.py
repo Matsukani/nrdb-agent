@@ -1,4 +1,5 @@
 import json
+import os
 
 from .annotator import AnnotationAgent
 from .annotator_v7 import AnnotationAgentV7
@@ -12,6 +13,7 @@ AGENT_JSON_ATTEMPTS = 3
 
 
 def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, target_dialects=None, surface_model=None):
+	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
 	bundle = nrdb.job_items(job_id)
 	job = bundle["job"]
 	items = bundle["items"]
