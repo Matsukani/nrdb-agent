@@ -50,6 +50,8 @@ def classify_stage(instructions):
 		return "semantic_review"
 	if "japanese translation phase" in text:
 		return "translation"
+	if "active grammatical critic" in text and "miyako morphemic analysis" in text:
+		return "forward_id_review"
 	if "japanese-to-miyako id agent" in text:
 		return "reverse_id_planning"
 	if "grammatical id-sequence reviewer" in text:
