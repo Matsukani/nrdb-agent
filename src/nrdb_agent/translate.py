@@ -1,6 +1,6 @@
 import os
 
-from .annotator_v8 import AnnotationAgentV8
+from .annotator_v9 import AnnotationAgentV9
 from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
@@ -13,6 +13,28 @@ def _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids=None):
 	if not rows:
 		raise RuntimeError("no dialects available for region {!r} under annotation schema {}".format(region, annotation_schema_id))
 	return [int(row["id"]) for row in rows]
+
+
+def _morph_provenance(morph):
+	value = morph.get("inference") if isinstance(morph, dict) else None
+	return value if isinstance(value, dict) else {}
+
+
+def _trace_morph_provenance(progress, morph):
+	inference = _morph_provenance(morph)
+	if not inference:
+		progress("  morph: model provenance unavailable")
+		return
+	progress(
+		"  morph: model={} ({}) backend={} decoding={} top-k={} id-weight={}".format(
+			inference.get("model_id", ""),
+			inference.get("model_label", ""),
+			inference.get("backend", ""),
+			inference.get("segmentation_mode", ""),
+			inference.get("segmentation_top_k", ""),
+			inference.get("segmentation_id_weight", ""),
+		)
+	)
 
 
 def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None, model_name="gpt-5.6", surface_model=None, id_model=None, openai_client=None, progress=print):
@@ -31,13 +53,17 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 
 	dialects = _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids)
 	nrdb.exclude_job_id = 0
+	id_model = id_model or os.environ.get("NRDB_ID_MODEL")
 
 	if target == "japanese":
 		dialect_id = dialects[0]
-		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={}".format(region, dialect_id, annotation_schema_id))
+		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} forward=annotation-v9".format(region, dialect_id, annotation_schema_id))
 		progress("  morph: analyze")
 		morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
+		_trace_morph_provenance(progress, morph)
 		progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
+		if id_model:
+			progress("  forward ID critic: {}".format(id_model))
 		item = {
 			"sentence_id": 0,
 			"dialect_id": dialect_id,
@@ -48,11 +74,14 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 		job = {
 			"annotation_schema_id": annotation_schema_id,
 			"model_name": model_name,
-			"prompt_version": "annotation-v8",
+			"prompt_version": "annotation-v9",
 			"produce_translation": True,
 			"blind_translation": False,
 		}
-		agent = AnnotationAgentV8(nrdb, model_name, client=openai_client, progress=progress)
+		agent = AnnotationAgentV9(
+			nrdb, model_name, client=openai_client, progress=progress,
+			id_model_path=id_model,
+		)
 		result = agent.annotate(item, job, morph)
 		return {
 			"direction": "miyako_to_japanese",
@@ -60,6 +89,7 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			"region": region,
 			"annotation_schema_id": annotation_schema_id,
 			"morph_dialect_id": dialect_id,
+			"morph_inference": _morph_provenance(morph),
 			"segmented": result.get("segmented", ""),
 			"annotation": result.get("annotation", ""),
 			"translation": result.get("trsl_ai", ""),
@@ -71,7 +101,6 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	if not dialect_ids:
 		raise ValueError("Japanese -> Miyako translation requires an ordered --dialects list")
 	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
-	id_model = id_model or os.environ.get("NRDB_ID_MODEL")
 	progress("translate: Japanese -> Miyako | region={} dialects={} schema={}".format(region, dialects, annotation_schema_id))
 	if id_model:
 		progress("  ID critic: {}".format(id_model))
