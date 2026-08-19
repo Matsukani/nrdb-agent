@@ -82,12 +82,7 @@ def price_usage(model, input_tokens, cached_tokens, cache_write_tokens, output_t
 		+ cache_write_tokens * rates["cache_write"] * input_multiplier
 		+ output_tokens * rates["output"] * output_multiplier
 	) / 1000000.0
-	return {
-		"canonical_model": canonical,
-		"uncached_input_tokens": uncached_tokens,
-		"long_context": long_context,
-		"estimated_cost_usd": cost,
-	}
+	return {"canonical_model": canonical, "uncached_input_tokens": uncached_tokens, "long_context": long_context, "estimated_cost_usd": cost}
 
 
 class UsageTracker:
@@ -112,17 +107,10 @@ class UsageTracker:
 		actual_model = str(getattr(response, "model", None) or requested_model or "")
 		priced = price_usage(actual_model, input_tokens, cached_tokens, cache_write_tokens, output_tokens)
 		row = {
-			"response_id": getattr(response, "id", None),
-			"requested_model": str(requested_model or ""),
-			"model": actual_model,
-			"canonical_model": canonical_model(actual_model),
-			"stage": classify_stage(instructions),
-			"input_tokens": input_tokens,
-			"cached_input_tokens": cached_tokens,
-			"cache_write_tokens": cache_write_tokens,
-			"output_tokens": output_tokens,
-			"reasoning_tokens": reasoning_tokens,
-			"total_tokens": total_tokens,
+			"response_id": getattr(response, "id", None), "requested_model": str(requested_model or ""),
+			"model": actual_model, "canonical_model": canonical_model(actual_model), "stage": classify_stage(instructions),
+			"input_tokens": input_tokens, "cached_input_tokens": cached_tokens, "cache_write_tokens": cache_write_tokens,
+			"output_tokens": output_tokens, "reasoning_tokens": reasoning_tokens, "total_tokens": total_tokens,
 			"long_context": bool(priced and priced["long_context"]),
 			"estimated_cost_usd": priced["estimated_cost_usd"] if priced else None,
 		}
@@ -131,11 +119,7 @@ class UsageTracker:
 
 	def summary(self, since=0):
 		calls = self.calls[int(since):]
-		totals = {
-			"requests": len(calls), "input_tokens": 0, "cached_input_tokens": 0,
-			"cache_write_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0,
-			"total_tokens": 0, "estimated_cost_usd": 0.0,
-		}
+		totals = {"requests": len(calls), "input_tokens": 0, "cached_input_tokens": 0, "cache_write_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "total_tokens": 0, "estimated_cost_usd": 0.0}
 		unknown_pricing = False
 		stage_rows = defaultdict(list)
 		model_rows = defaultdict(list)
@@ -152,8 +136,7 @@ class UsageTracker:
 
 		def aggregate(rows):
 			return {
-				"requests": len(rows),
-				"input_tokens": sum(int(row.get("input_tokens") or 0) for row in rows),
+				"requests": len(rows), "input_tokens": sum(int(row.get("input_tokens") or 0) for row in rows),
 				"cached_input_tokens": sum(int(row.get("cached_input_tokens") or 0) for row in rows),
 				"output_tokens": sum(int(row.get("output_tokens") or 0) for row in rows),
 				"reasoning_tokens": sum(int(row.get("reasoning_tokens") or 0) for row in rows),
@@ -161,38 +144,40 @@ class UsageTracker:
 			}
 
 		return {
-			"format": "nrdb-agent.api-usage.v1",
-			"pricing_as_of": PRICING_AS_OF,
-			"pricing_source": PRICING_SOURCE,
-			"pricing_complete": not unknown_pricing,
-			"totals": totals,
+			"format": "nrdb-agent.api-usage.v1", "pricing_as_of": PRICING_AS_OF, "pricing_source": PRICING_SOURCE,
+			"pricing_complete": not unknown_pricing, "totals": totals,
 			"by_stage": {key: aggregate(rows) for key, rows in sorted(stage_rows.items())},
-			"by_model": {key: aggregate(rows) for key, rows in sorted(model_rows.items())},
-			"calls": calls,
+			"by_model": {key: aggregate(rows) for key, rows in sorted(model_rows.items())}, "calls": calls,
 		}
 
 
 class _TrackedResponses:
-	def __init__(self, responses, tracker):
-		self._responses = responses
+	def __init__(self, client_getter, tracker):
+		self._client_getter = client_getter
 		self._tracker = tracker
 
 	def create(self, **kwargs):
-		response = self._responses.create(**kwargs)
+		response = self._client_getter().responses.create(**kwargs)
 		self._tracker.record(response, requested_model=kwargs.get("model"), instructions=kwargs.get("instructions"))
 		return response
-
-	def __getattr__(self, name):
-		return getattr(self._responses, name)
 
 
 class TrackedOpenAIClient:
 	def __init__(self, client, tracker):
 		self._client = client
-		self.responses = _TrackedResponses(client.responses, tracker)
+		self._resolved_client = None
+		self.responses = _TrackedResponses(self._get_client, tracker)
+
+	def _get_client(self):
+		if self._client is not None:
+			return self._client
+		if self._resolved_client is None:
+			from openai import OpenAI
+			self._resolved_client = OpenAI()
+		return self._resolved_client
 
 	def __getattr__(self, name):
-		return getattr(self._client, name)
+		return getattr(self._get_client(), name)
 
 
 def tracked_client(client, tracker):
