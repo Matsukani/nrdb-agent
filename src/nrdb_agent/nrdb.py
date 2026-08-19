@@ -10,6 +10,7 @@ class NrdbClient:
 		self.workflow_url = os.environ.get("NRDB_AGENT_WORKFLOW_URL") or base_url + "/agent_workflow.php"
 		self.evidence_url = os.environ.get("NRDB_AGENT_EVIDENCE_URL") or base_url + "/agent_evidence.php"
 		self.results_url = os.environ.get("NRDB_AGENT_RESULTS_URL") or base_url + "/agent_results.php"
+		self.morph_eval_url = os.environ.get("NRDB_AGENT_MORPH_EVAL_URL") or base_url + "/agent_morph_eval.php"
 		self.form_support_url = os.environ.get("NRDB_AGENT_FORM_SUPPORT_URL") or base_url + "/agent_form_support.php"
 		self.reverse_evidence_url = os.environ.get("NRDB_AGENT_REVERSE_EVIDENCE_URL") or base_url + "/agent_reverse_evidence.php"
 		self.region_dialects_url = os.environ.get("NRDB_AGENT_REGION_DIALECTS_URL") or base_url + "/agent_region_dialects.php"
@@ -82,6 +83,27 @@ class NrdbClient:
 		if not payload.get("success"):
 			raise RuntimeError(payload.get("error") or "NRDB agent results API failed")
 		return payload
+
+	def morph_eval_rows(self, dataset_ids, page_size=500):
+		dataset_ids = sorted({int(value) for value in dataset_ids})
+		if not dataset_ids:
+			return []
+		rows = []
+		after_id = 0
+		while True:
+			payload = self.http.get(self.morph_eval_url, {
+				"dataset_ids": ",".join(str(value) for value in dataset_ids),
+				"after_id": int(after_id), "limit": int(page_size),
+			})
+			if not payload.get("success"):
+				raise RuntimeError(payload.get("error") or "NRDB morph evaluation API failed")
+			batch = payload.get("rows", [])
+			rows.extend(batch)
+			next_after_id = payload.get("next_after_id")
+			if next_after_id in (None, ""):
+				break
+			after_id = int(next_after_id)
+		return rows
 
 	def region_dialects(self, region, annotation_schema_id):
 		payload = self.http.get(self.region_dialects_url, {
