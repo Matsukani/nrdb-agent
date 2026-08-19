@@ -21,13 +21,19 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 	completed = 0
 	failed = 0
 	cost = 0.0
-	for index, item in enumerate(selected, start=1):
-		progress("[{}/{}] {}".format(index, len(selected), item.get("example_id") or item.get("row_id")))
+	for index, source_item in enumerate(selected, start=1):
+		progress("[{}/{}] {}".format(index, len(selected), source_item.get("example_id") or source_item.get("row_id")))
+		item = dict(source_item)
 		if item.get("source_status") == "invalid":
-			error = item.get("source_validation_error") or "input morphology is invalid"
-			rows.append(output_row(item, error=error))
-			failed += 1
-			continue
+			if morphology_source == "existing":
+				error = item.get("source_validation_error") or "input morphology is invalid"
+				rows.append(output_row(item, error=error))
+				failed += 1
+				continue
+			# Invalid prior morphology is not authoritative in predict/auto modes.
+			# Treat it as absent so a clean analysis can replace it.
+			item["existing_segmented"] = ""
+			item["existing_annotation"] = ""
 		try:
 			result = execute_item(
 				nrdb, item, task, bundle["annotation_schema_id"], bundle["region"],
@@ -35,11 +41,11 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 				morphology_source=morphology_source, target_dialect_ids=target_dialect_ids,
 				id_model=id_model, surface_model=surface_model, progress=progress,
 			)
-			rows.append(output_row(item, result=result))
+			rows.append(output_row(source_item, result=result))
 			cost += float(result.get("estimated_cost_usd") or 0.0)
 			completed += 1
 		except Exception as error:
-			rows.append(output_row(item, error=error))
+			rows.append(output_row(source_item, error=error))
 			failed += 1
 			progress("  failed: {}".format(error))
 
