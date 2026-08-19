@@ -1,7 +1,7 @@
 import json
 import os
 
-from .annotator_v9 import AnnotationAgentV9
+from .forward_critic_agent import ForwardCriticAnnotationAgent
 from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
@@ -85,21 +85,27 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	dialects = _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids)
 	nrdb.exclude_job_id = 0
 	id_model = id_model or os.environ.get("NRDB_ID_MODEL")
+	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
 	usage_tracker = UsageTracker()
 	client = tracked_client(openai_client, usage_tracker)
 
 	if target == "japanese":
 		dialect_id = dialects[0]
-		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} forward=annotation-v9 model={}".format(region, dialect_id, annotation_schema_id, model_name))
+		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} forward=annotation-v9+critics model={}".format(region, dialect_id, annotation_schema_id, model_name))
 		progress("  morph: analyze")
 		morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
 		_trace_morph_provenance(progress, morph)
 		progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
 		if id_model:
 			progress("  forward ID critic: {}".format(id_model))
+		if surface_model:
+			progress("  forward surface critic: {}".format(surface_model))
 		item = {"sentence_id": 0, "dialect_id": dialect_id, "dialect_region": region, "text": text, "translation_jp": None}
 		job = {"annotation_schema_id": annotation_schema_id, "model_name": model_name, "prompt_version": "annotation-v9", "produce_translation": True, "blind_translation": False}
-		agent = AnnotationAgentV9(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
+		agent = ForwardCriticAnnotationAgent(
+			nrdb, model_name, client=client, progress=progress,
+			id_model_path=id_model, surface_model_path=surface_model,
+		)
 		result = _annotate_with_json_retry(agent, item, job, morph, progress)
 		usage = usage_tracker.summary()
 		_trace_usage(progress, usage)
@@ -114,7 +120,6 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 
 	if not dialect_ids:
 		raise ValueError("Japanese -> Miyako translation requires an ordered --dialects list")
-	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
 	progress("translate: Japanese -> Miyako | region={} dialects={} schema={} model={}".format(region, dialects, annotation_schema_id, model_name))
 	if id_model:
 		progress("  ID critic: {}".format(id_model))
