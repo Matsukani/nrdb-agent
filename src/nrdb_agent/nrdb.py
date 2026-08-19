@@ -7,6 +7,7 @@ class NrdbClient:
 	def __init__(self, agent_url=None, morph_url=None, timeout=60):
 		self.agent_url = (agent_url or os.environ.get("NRDB_AGENT_URL") or "http://127.0.0.1/php/agent.php").rstrip("/")
 		base_url = self.agent_url.rsplit("/", 1)[0]
+		self.workflow_url = os.environ.get("NRDB_AGENT_WORKFLOW_URL") or base_url + "/agent_workflow.php"
 		self.evidence_url = os.environ.get("NRDB_AGENT_EVIDENCE_URL") or base_url + "/agent_evidence.php"
 		self.results_url = os.environ.get("NRDB_AGENT_RESULTS_URL") or base_url + "/agent_results.php"
 		self.form_support_url = os.environ.get("NRDB_AGENT_FORM_SUPPORT_URL") or base_url + "/agent_form_support.php"
@@ -22,6 +23,12 @@ class NrdbClient:
 			raise RuntimeError(payload.get("error") or "NRDB agent API failed")
 		return payload
 
+	def _workflow_get(self, action, **params):
+		payload = self.http.get(self.workflow_url, {"action": action, **params})
+		if not payload.get("success"):
+			raise RuntimeError(payload.get("error") or "NRDB agent workflow API failed")
+		return payload
+
 	def _evidence_get(self, action, **params):
 		payload = self.http.get(self.evidence_url, {"action": action, **params})
 		if not payload.get("success"):
@@ -34,6 +41,12 @@ class NrdbClient:
 			raise RuntimeError(result.get("error") or "NRDB agent API failed")
 		return result
 
+	def _workflow_post(self, action, payload):
+		result = self.http.post(self.workflow_url + "?action=" + action, payload)
+		if not result.get("success"):
+			raise RuntimeError(result.get("error") or "NRDB agent workflow API failed")
+		return result
+
 	def create_job(self, dataset_id, mode, limit, model_name, prompt_version="annotation-v1", selection_seed=1, produce_translation=False, blind_translation=False):
 		return self._agent_post("create_job", {
 			"dataset_id": int(dataset_id), "mode": mode, "limit": int(limit),
@@ -43,11 +56,26 @@ class NrdbClient:
 			"blind_translation": bool(blind_translation),
 		})
 
+	def create_workflow_job(self, dataset_id, task, limit, model_name, selection_seed=1,
+		translation_evidence="ignore", morphology_source="predict", needs_filter="any",
+		scope_text_id=None, scope_sentence_start=None, scope_sentence_end=None):
+		return self._workflow_post("create_job", {
+			"dataset_id": int(dataset_id), "task": str(task), "limit": int(limit),
+			"model_name": str(model_name), "selection_seed": int(selection_seed),
+			"translation_evidence": str(translation_evidence),
+			"morphology_source": str(morphology_source), "needs_filter": str(needs_filter),
+			"scope_text_id": scope_text_id, "scope_sentence_start": scope_sentence_start,
+			"scope_sentence_end": scope_sentence_end,
+		})
+
 	def jobs(self):
 		return self._agent_get("jobs")["jobs"]
 
 	def job_items(self, job_id):
 		return self._agent_get("job_items", job_id=int(job_id))
+
+	def workflow_job_items(self, job_id):
+		return self._workflow_get("job_items", job_id=int(job_id))
 
 	def job_results(self, job_id):
 		payload = self.http.get(self.results_url, {"job_id": int(job_id)})
