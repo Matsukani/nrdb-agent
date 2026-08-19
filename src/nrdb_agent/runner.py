@@ -78,7 +78,11 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 	completed = 0
 	try:
 		for index, item in enumerate(items, start=1):
-			progress("[{}/{}] sentence {}".format(index, len(items), item["sentence_id"]))
+			label = "sentence {}".format(item["sentence_id"])
+			if hasattr(progress, "item_start"):
+				progress.item_start(index, len(items), label)
+			else:
+				progress("[{}/{}] {}".format(index, len(items), label))
 			usage_start = usage_tracker.snapshot()
 			try:
 				if prompt_version == "reverse-v1":
@@ -126,14 +130,30 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 				progress("  translation: {!r}".format(result.get("trsl_ai", "")))
 			progress("  done")
 			completed += 1
+			if hasattr(progress, "item_result"):
+				task = "reverse" if prompt_version == "reverse-v1" else "morph-translate" if job.get("produce_translation") else "morph"
+				display_result = {
+					"segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""),
+					"translation": result.get("segmented", "") if task == "reverse" else result.get("trsl_ai", ""),
+					"api_usage": sentence_usage,
+					"estimated_cost_usd": (sentence_usage.get("totals") or {}).get("estimated_cost_usd"),
+				}
+				progress.item_result(index, len(items), task, display_result, label)
 		job_usage = usage_tracker.summary()
 		_trace_usage(progress, job_usage, prefix="job API usage")
 		if max_items is None or completed >= len(bundle["items"]):
 			nrdb.set_job_status(job_id, "completed")
+		if hasattr(progress, "job_summary"):
+			progress.job_summary(
+				completed, len(items), (job_usage.get("totals") or {}).get("estimated_cost_usd") or 0.0,
+				failed=0, pricing_complete=bool(job_usage.get("pricing_complete")),
+			)
 		summary = nrdb.summary(job_id)
 		if isinstance(summary, dict):
 			summary["api_usage"] = job_usage
 		return summary
 	except BaseException as error:
 		nrdb.set_job_status(job_id, "failed", str(error))
+		if hasattr(progress, "item_error"):
+			progress.item_error(completed + 1, len(items), error)
 		raise
