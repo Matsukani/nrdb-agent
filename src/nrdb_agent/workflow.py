@@ -26,6 +26,28 @@ def _usage_cost(usage):
 		return 0.0
 
 
+def _pricing_complete(result):
+	usage = result.get("api_usage") if isinstance(result, dict) else None
+	return bool(isinstance(usage, dict) and usage.get("pricing_complete"))
+
+
+def _item_start(progress, index, total, label):
+	if hasattr(progress, "item_start"):
+		progress.item_start(index, total, label)
+	else:
+		progress("[{}/{}] {}".format(index, total, label))
+
+
+def _item_result(progress, index, total, task, result, label):
+	if hasattr(progress, "item_result"):
+		progress.item_result(index, total, task, result, label)
+
+
+def _job_summary(progress, completed, total, cost, failed, pricing_complete):
+	if hasattr(progress, "job_summary"):
+		progress.job_summary(completed, total, cost, failed=failed, pricing_complete=pricing_complete)
+
+
 def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt-5.6",
 	translation_evidence="ignore", morphology_source="predict", target_dialect_ids=None,
 	id_model=None, surface_model=None, openai_client=None, progress=print):
@@ -140,10 +162,13 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 	nrdb.exclude_job_id = int(job_id)
 	nrdb.set_job_status(job_id, "running")
 	completed = 0
+	failed = 0
 	cost = 0.0
+	pricing_complete = True
 	try:
 		for index, raw in enumerate(items, start=1):
-			progress("[{}/{}] sentence {}".format(index, len(items), raw["sentence_id"]))
+			label = "sentence {}".format(raw["sentence_id"])
+			_item_start(progress, index, len(items), label)
 			item = dict(raw)
 			result = execute_item(
 				nrdb, item, job["task"], job["annotation_schema_id"], item.get("dialect_region"),
@@ -153,6 +178,7 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 				openai_client=openai_client, progress=progress,
 			)
 			cost += float(result.get("estimated_cost_usd") or 0.0)
+			pricing_complete = pricing_complete and _pricing_complete(result)
 			evidence = dict(result.get("evidence") or {})
 			evidence["api_usage"] = result.get("api_usage", {})
 			nrdb.save_result(
@@ -163,12 +189,19 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 				evidence=evidence, model_response_id=None,
 			)
 			completed += 1
+			_item_result(progress, index, len(items), job["task"], result, label)
 		if max_items is None or completed >= len(bundle.get("items", [])):
 			nrdb.set_job_status(job_id, "completed")
+		_job_summary(progress, completed, len(items), cost, failed, pricing_complete)
 		summary = nrdb.summary(job_id)
 		if isinstance(summary, dict):
-			summary["workflow"] = {"task": job["task"], "completed": completed, "estimated_cost_usd": cost}
+			summary["workflow"] = {
+				"task": job["task"], "completed": completed, "failed": failed,
+				"estimated_cost_usd": cost, "pricing_complete": pricing_complete,
+			}
 		return summary
 	except BaseException as error:
 		nrdb.set_job_status(job_id, "failed", str(error))
+		if hasattr(progress, "item_error"):
+			progress.item_error(completed + 1, len(items), error)
 		raise
