@@ -2,6 +2,7 @@ import argparse
 import json
 
 from .asr_review import review_asr_predictions
+from .cli_output import TranslationProgress, silent_translation_line
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
 from .runner import run_job
@@ -197,6 +198,9 @@ def main():
 	translate.add_argument("--surface-model", default=None, help="Optional nrdb-morph surface_model.json; also reads NRDB_SURFACE_MODEL")
 	translate.add_argument("--model", default="gpt-5.6", help="LLM model name; does not select the nrdb-morph model")
 	translate.add_argument("--json", action="store_true", help="Print complete translation result as JSON")
+	output_mode = translate.add_mutually_exclusive_group()
+	output_mode.add_argument("--quiet", action="store_true", help="Show only major translation milestones and the final result")
+	output_mode.add_argument("--silent", action="store_true", help="Show only a spinner while working, then translation and estimated cost")
 
 	asr_review = sub.add_parser("asr-review", help="Blindly rerank ASR n-best hypotheses with NRDB linguistic evidence")
 	asr_review.add_argument("predictions", help="predictions.tsv from nrdb-asr eval-manifest --nbest")
@@ -235,11 +239,25 @@ def main():
 	elif args.command == "translate":
 		if args.target == "miyako" and not args.dialects:
 			parser.error("Japanese -> Miyako translation requires --dialects ID1,ID2,...")
-		value = translate_text(
-			nrdb, args.text, args.target, args.annotation_schema_id, args.region,
-			dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
-		)
-		_print_json(value) if args.json else _print_translation(value)
+		if args.json and (args.quiet or args.silent):
+			parser.error("--json cannot be combined with --quiet or --silent")
+		mode = "silent" if args.silent else "quiet" if args.quiet else "default"
+		display = TranslationProgress(mode)
+		display.start()
+		try:
+			value = translate_text(
+				nrdb, args.text, args.target, args.annotation_schema_id, args.region,
+				dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
+				progress=display,
+			)
+		finally:
+			display.stop()
+		if args.json:
+			_print_json(value)
+		elif args.silent:
+			print(silent_translation_line(value))
+		else:
+			_print_translation(value)
 	elif args.command == "asr-review":
 		value = review_asr_predictions(
 			nrdb, args.predictions, args.out_dir, args.annotation_schema_id, args.region, args.dialect_id,
