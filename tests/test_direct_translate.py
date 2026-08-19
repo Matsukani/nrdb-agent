@@ -13,17 +13,28 @@ class FakeNrdb:
 
 	def morph_analyze(self, text, dialect_id, annotation_schema_id):
 		self.morph_calls.append((text, dialect_id, annotation_schema_id))
-		return {"segmented": "mi-ja", "annotation": "見mv-top:1"}
+		return {
+			"segmented": "mi-ja",
+			"annotation": "見mv-top:1",
+			"inference": {
+				"model_id": "miyako-65k-hybrid-shared-v002",
+				"model_label": "Miyako 65k hybrid shared v002",
+				"backend": "bilstm_crf_lookup_v1",
+				"segmentation_mode": "joint",
+				"segmentation_top_k": 5,
+				"segmentation_id_weight": 1.0,
+			},
+		}
 
 
 class FakeForwardAgent:
-	def __init__(self, nrdb, model_name, client=None, progress=print):
+	def __init__(self, nrdb, model_name, client=None, progress=print, id_model_path=None):
 		self.nrdb = nrdb
 
 	def annotate(self, item, job, morph):
 		assert item["sentence_id"] == 0
 		assert item["dialect_region"] == "宮古"
-		assert job["prompt_version"] == "annotation-v8"
+		assert job["prompt_version"] == "annotation-v9"
 		assert job["produce_translation"] is True
 		assert morph["annotation"] == "見mv-top:1"
 		return {
@@ -33,7 +44,7 @@ class FakeForwardAgent:
 
 
 class FakeReverseAgent:
-	def __init__(self, nrdb, model_name, client=None, progress=print, surface_model_path=None):
+	def __init__(self, nrdb, model_name, client=None, progress=print, surface_model_path=None, id_model_path=None):
 		assert surface_model_path == "/tmp/surface.json"
 
 	def annotate(self, item, job, morph):
@@ -45,13 +56,16 @@ class FakeReverseAgent:
 		}
 
 
-def test_direct_miyako_to_japanese_uses_region_dialect_and_morph_service(monkeypatch):
-	monkeypatch.setattr(translate_module, "AnnotationAgentV8", FakeForwardAgent)
+def test_direct_miyako_to_japanese_uses_region_dialect_morph_service_and_provenance(monkeypatch):
+	monkeypatch.setattr(translate_module, "AnnotationAgentV9", FakeForwardAgent)
 	nrdb = FakeNrdb()
-	result = translate_module.translate_text(nrdb, "mija", "japanese", 2, "宮古", progress=lambda _: None)
+	messages = []
+	result = translate_module.translate_text(nrdb, "mija", "japanese", 2, "宮古", progress=messages.append)
 	assert nrdb.morph_calls == [("mija", 22, 2)]
 	assert result["translation"] == "見るよ。"
 	assert result["morph_dialect_id"] == 22
+	assert result["morph_inference"]["model_id"] == "miyako-65k-hybrid-shared-v002"
+	assert any("miyako-65k-hybrid-shared-v002" in message and "top-k=5" in message for message in messages)
 	assert nrdb.exclude_job_id == 0
 
 
