@@ -18,9 +18,9 @@ def test_silent_translation_line_includes_estimated_cost():
 	assert estimated_cost_text(_value()) == "$0.0901"
 
 
-def test_quiet_progress_keeps_only_major_milestones():
+def test_default_progress_is_quiet_and_keeps_only_major_milestones():
 	stream = StringIO()
-	progress = TranslationProgress("quiet", stream=stream)
+	progress = TranslationProgress(stream=stream)
 	progress("  morph: analyze")
 	progress("  morph: model=miyako-65k")
 	progress("    -> corpus_examples(label=x)")
@@ -34,9 +34,34 @@ def test_quiet_progress_keeps_only_major_milestones():
 	assert "final: decision=proposed" in value
 
 
-def test_silent_progress_emits_no_trace_messages():
+def test_verbose_progress_keeps_full_trace():
 	stream = StringIO()
-	progress = TranslationProgress("silent", stream=stream)
+	progress = TranslationProgress("verbose", stream=stream)
+	progress("    -> corpus_examples(label=x)")
+	assert "corpus_examples(label=x)" in stream.getvalue()
+
+
+def test_silent_progress_tracks_milestones_without_trace_output():
+	trace = StringIO()
+	bar_stream = StringIO()
+	progress = TranslationProgress("silent", stream=trace, progress_stream=bar_stream)
 	progress("translate: Miyako -> Japanese")
+	progress("  morph: analyze")
+	progress("  morph: model=miyako-65k")
 	progress("  final: decision=proposed")
-	assert stream.getvalue() == ""
+	assert trace.getvalue() == ""
+	assert progress.bar._completed == 3
+	assert progress.bar._label == "annotation finalized"
+
+
+def test_compact_progress_tracks_current_milestone_label():
+	trace = StringIO()
+	bar_stream = StringIO()
+	progress = TranslationProgress("compact", stream=trace, progress_stream=bar_stream)
+	progress("translate: Japanese -> Miyako")
+	progress("  reverse-v1: Japanese -> Miyako IDs (batch lexical triage)")
+	progress("  id-model: mean_logp=-3 strong_surprises=1")
+	progress.bar._render("/")
+	assert trace.getvalue() == ""
+	assert "grammatical critic" in bar_stream.getvalue()
+	assert "===" in bar_stream.getvalue()
