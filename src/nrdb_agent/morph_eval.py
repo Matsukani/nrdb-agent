@@ -61,10 +61,20 @@ def _run_contract(run_dir):
 	}
 
 
+def _agreement_flags(baseline_segmented, baseline_annotation, agent_segmented, agent_annotation):
+	id_agree = bool(annotation_metrics(agent_annotation, baseline_annotation)["linguistic_exact"])
+	seg_agree = bool(segmentation_metrics(agent_segmented, baseline_segmented)["exact"])
+	return {
+		"baseline_agent_id_agree": int(id_agree),
+		"baseline_agent_seg_agree": int(seg_agree),
+		"baseline_agent_full_agree": int(id_agree and seg_agree),
+	}
+
+
 def _result_row(source, baseline, agent, usage, baseline_metrics, agent_metrics, baseline_seg, agent_seg):
 	inference = baseline.get("inference") if isinstance(baseline, dict) else None
 	inference = inference if isinstance(inference, dict) else {}
-	return {
+	row = {
 		"sentence_id": int(source["sentence_id"]),
 		"dataset_id": int(source["dataset_id"]),
 		"dataset_name": source.get("dataset_name") or "",
@@ -96,6 +106,66 @@ def _result_row(source, baseline, agent, usage, baseline_metrics, agent_metrics,
 		"agent_cost_usd": float(((usage.get("totals") or {}).get("estimated_cost_usd") or 0.0)),
 		"agent_pricing_complete": bool(usage.get("pricing_complete")),
 	}
+	row.update(_agreement_flags(
+		row["baseline_segmented"], row["baseline_annotation"],
+		row["agent_segmented"], row["agent_annotation"],
+	))
+	return row
+
+
+def _quality_summary(rows, total_rows):
+	baseline_rows = [
+		{"ai_segmented": row["baseline_segmented"], "ai_annotation": row["baseline_annotation"],
+		 "gold_segmented": row["gold_segmented"], "gold_annotation": row["gold_annotation"]}
+		for row in rows
+	]
+	agent_rows = [
+		{"ai_segmented": row["agent_segmented"], "ai_annotation": row["agent_annotation"],
+		 "gold_segmented": row["gold_segmented"], "gold_annotation": row["gold_annotation"]}
+		for row in rows
+	]
+	baseline_id = job_annotation_metrics(baseline_rows)
+	agent_id = job_annotation_metrics(agent_rows)
+	baseline_seg = job_segmentation_metrics(baseline_rows)
+	agent_seg = job_segmentation_metrics(agent_rows)
+	baseline_full_exact = sum(1 for row in rows if bool(row["baseline_id_exact"]) and bool(row["baseline_seg_exact"]))
+	agent_full_exact = sum(1 for row in rows if bool(row["agent_id_exact"]) and bool(row["agent_seg_exact"]))
+	count = len(rows)
+	return {
+		"rows": count,
+		"coverage": count / total_rows if total_rows else None,
+		"baseline": {
+			"id_exact_accuracy": baseline_id["linguistic_exact_accuracy"],
+			"id_match_rate": baseline_id["id_match_rate"],
+			"segmentation_exact_accuracy": baseline_seg["exact_accuracy"],
+			"segmentation_boundary_f1": baseline_seg["boundary_f1"],
+			"full_analysis_exact_accuracy": baseline_full_exact / count if count else None,
+		},
+		"agent": {
+			"id_exact_accuracy": agent_id["linguistic_exact_accuracy"],
+			"id_match_rate": agent_id["id_match_rate"],
+			"segmentation_exact_accuracy": agent_seg["exact_accuracy"],
+			"segmentation_boundary_f1": agent_seg["boundary_f1"],
+			"full_analysis_exact_accuracy": agent_full_exact / count if count else None,
+		},
+	}
+
+
+def _agreement_calibration(rows):
+	total = len(rows)
+	views = {}
+	for name, key in (
+		("id", "baseline_agent_id_agree"),
+		("segmentation", "baseline_agent_seg_agree"),
+		("full_analysis", "baseline_agent_full_agree"),
+	):
+		agree = [row for row in rows if bool(row.get(key))]
+		disagree = [row for row in rows if not bool(row.get(key))]
+		views[name] = {
+			"agreement": _quality_summary(agree, total),
+			"disagreement": _quality_summary(disagree, total),
+		}
+	return views
 
 
 def _paired_summary(rows):
@@ -148,6 +218,7 @@ def _paired_summary(rows):
 			"baseline_seg_errors_corrected": seg_corrected,
 			"baseline_seg_correct_damaged": seg_damaged,
 		},
+		"agreement_calibration": _agreement_calibration(rows),
 	}
 
 
@@ -225,13 +296,14 @@ def evaluate_morph_agent(nrdb, run_dir, model_name="gpt-5.6", limit=None, seed=1
 		agent_seg = segmentation_metrics(agent_result.get("segmented"), source["gold_segmented"])
 		row = _result_row(source, baseline, agent_result, usage, baseline_metrics, agent_metrics, baseline_seg, agent_seg)
 		results.append(row)
-		progress("  baseline ID {:.1f}% -> agent {:.1f}% | cost ${:.4f}".format(
-			100.0 * baseline_metrics["id_match_rate"], 100.0 * agent_metrics["id_match_rate"], cost,
+		progress("  baseline ID {:.1f}% -> agent {:.1f}% | agree={} | cost ${:.4f}".format(
+			100.0 * baseline_metrics["id_match_rate"], 100.0 * agent_metrics["id_match_rate"],
+			"yes" if row["baseline_agent_full_agree"] else "no", cost,
 		))
 
 	summary = _paired_summary(results)
 	summary.update({
-		"format": "nrdb-agent.morph-ceiling-eval.v1",
+		"format": "nrdb-agent.morph-ceiling-eval.v2",
 		"morph_run": contract["run_dir"],
 		"train_rows": contract["train_rows"],
 		"train_rows_missing_identity": contract["train_rows_missing_identity"],
