@@ -2,11 +2,13 @@ import argparse
 import json
 
 from .asr_review import review_asr_predictions
+from .batch import export_job_results_tsv, process_dataset
 from .cli_output import TranslationProgress, silent_translation_line
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
 from .runner import run_job
 from .translate import translate_text
+from .workflow import run_workflow_job
 
 
 def _print_json(value):
@@ -62,13 +64,27 @@ def _parse_dialect_ids(value):
 	return out or None
 
 
+def _parse_sentence_range(value):
+	text = str(value or "").strip()
+	if not text:
+		return None
+	parts = text.split(":", 1)
+	try:
+		start = int(parts[0])
+		end = int(parts[1]) if len(parts) == 2 and parts[1] else start
+	except ValueError as error:
+		raise argparse.ArgumentTypeError("sentence scope must be ID or START:END") from error
+	if start < 1 or end < start:
+		raise argparse.ArgumentTypeError("sentence scope must use positive IDs with END >= START")
+	return (start, end)
+
+
 def _print_results(payload, show_sentences=0):
 	job = payload["job"]
 	rows = payload.get("results", [])
 	reverse = job.get("prompt_version") == "reverse-v1"
 	print("job {} | dataset {} ({}) | status {} | model {} | prompt {}".format(job["id"], job["dataset_id"], job.get("dataset_name", ""), job.get("status", ""), job.get("model_name", ""), job.get("prompt_version", "")))
 	print("=" * 80)
-
 	if show_sentences:
 		shown_rows = rows if show_sentences < 0 else rows[:show_sentences]
 		for index, row in enumerate(shown_rows, start=1):
@@ -110,7 +126,6 @@ def _print_results(payload, show_sentences=0):
 		if show_sentences > 0 and len(rows) > show_sentences:
 			print("showing {} of {} sentences (use --show-sentences with no number to show all)".format(show_sentences, len(rows)))
 			print("-" * 80)
-
 	if not reverse:
 		seg_metrics = job_segmentation_metrics(rows)
 		if seg_metrics["sentences_scored"]:
@@ -125,7 +140,6 @@ def _print_results(payload, show_sentences=0):
 			if seg_metrics["surface_mismatches"]:
 				print("  surface mismatches: {}".format(seg_metrics["surface_mismatches"]))
 			print()
-
 	metrics = job_annotation_metrics(rows)
 	if metrics["sentences_scored"]:
 		print("REVERSE ID METRICS" if reverse else "ID METRICS")
@@ -166,78 +180,137 @@ def _show_with_linguistic_metrics(nrdb, job_id):
 
 
 def main():
-	parser = argparse.ArgumentParser(description="Run constrained NRDB AI annotation jobs")
+	parser = argparse.ArgumentParser(description="Run constrained NRDB AI morphology and translation workflows")
 	parser.add_argument("--agent-url", default=None)
 	parser.add_argument("--morph-url", default=None)
 	sub = parser.add_subparsers(dest="command", required=True)
 
-	create = sub.add_parser("create", help="Create an explicit annotation job")
+	create = sub.add_parser("create", help="Create a scoped NRDB morphology/translation job")
 	create.add_argument("--dataset-id", type=int, required=True)
-	create.add_argument("--mode", choices=["blind_gold", "unannotated"], default="blind_gold")
+	create.add_argument("--task", choices=["morph", "translate", "morph-translate", "reverse"], default="morph")
+	create.add_argument("--translation-evidence", choices=["ignore", "use", "required"], default="ignore", help="How an existing human Japanese translation may constrain morphology")
+	create.add_argument("--morphology-source", choices=["predict", "existing", "auto"], default="predict", help="Predict morphology, freeze existing morphology, or use existing when available")
+	create.add_argument("--needs", choices=["any", "annotation", "translation", "either", "both"], default="any", help="Select rows missing annotation, translation, either, both, or no missingness filter")
+	create.add_argument("--text-id", type=int, default=None, help="Restrict a text dataset to one internal text_id")
+	create.add_argument("--sentence-id", type=_parse_sentence_range, default=None, metavar="ID|START:END", help="Restrict sentence/lxs rows by internal ex_sen_lx sentence ID")
 	create.add_argument("--limit", type=int, default=100)
 	create.add_argument("--seed", type=int, default=1)
 	create.add_argument("--model", default="gpt-5.6")
-	create.add_argument("--prompt-version", choices=["annotation-v1", "annotation-v2", "annotation-v3", "annotation-v4", "annotation-v5", "annotation-v6", "annotation-v7", "annotation-v8", "reverse-v1"], default="annotation-v8")
-	create.add_argument("--translate", action="store_true", help="Also generate a Japanese translation and store it as trsl_ai")
-	create.add_argument("--blind-translation", action="store_true", help="Generate trsl_ai without exposing translation_jp to the agent; implies --translate")
+	# Backward-compatible legacy job creation. Any of these flags switches create back to agent.php semantics.
+	create.add_argument("--mode", choices=["blind_gold", "unannotated"], default=None, help=argparse.SUPPRESS)
+	create.add_argument("--prompt-version", choices=["annotation-v1", "annotation-v2", "annotation-v3", "annotation-v4", "annotation-v5", "annotation-v6", "annotation-v7", "annotation-v8", "annotation-v9", "reverse-v1"], default=None, help=argparse.SUPPRESS)
+	create.add_argument("--translate", action="store_true", help=argparse.SUPPRESS)
+	create.add_argument("--blind-translation", action="store_true", help=argparse.SUPPRESS)
 
 	sub.add_parser("list", help="List recent jobs")
 
 	run = sub.add_parser("run", help="Run one existing job")
 	run.add_argument("job_id", type=int)
-	run.add_argument("--max-items", type=int, default=None, help="Process only this many items; useful for a smoke test")
-	run.add_argument("--target-dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...", help="For reverse-v1, also realize Miyako surface forms using this ordered dialect priority")
-	run.add_argument("--surface-model", default=None, help="Optional nrdb-morph surface_model.json for reverse surface criticism")
+	run.add_argument("--max-items", type=int, default=None)
+	run.add_argument("--target-dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...")
+	run.add_argument("--id-model", default=None, help="Optional nrdb-morph ID-sequence critic; also reads NRDB_ID_MODEL")
+	run.add_argument("--surface-model", default=None, help="Optional nrdb-morph surface critic; also reads NRDB_SURFACE_MODEL")
+
+	process = sub.add_parser("process", help="Process a portable _meta_/_cf_ XLSX or TSV dataset without registering it in NRDB")
+	process.add_argument("input")
+	process.add_argument("--task", choices=["morph", "translate", "morph-translate", "reverse"], required=True)
+	process.add_argument("--component", choices=["sen", "utt", "lxs", "lexeme"], default=None, help="Portable XLSX component; required only when more than one is enabled")
+	process.add_argument("--annotation-schema", dest="annotation_schema_id", type=int, default=None, help="Required for TSV; XLSX reads _meta_")
+	process.add_argument("--region", default=None, help="Required for TSV; XLSX reads _meta_")
+	process.add_argument("--dialect", dest="dialect_id", type=int, default=None, help="Fallback dialect_id for TSV rows without one")
+	process.add_argument("--dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...", help="Ordered target dialects for reverse")
+	process.add_argument("--translation-evidence", choices=["ignore", "use", "required"], default="ignore")
+	process.add_argument("--morphology-source", choices=["predict", "existing", "auto"], default="predict")
+	process.add_argument("--needs", choices=["any", "annotation", "translation", "either", "both"], default="any")
+	process.add_argument("--model", default="gpt-5.6")
+	process.add_argument("--id-model", default=None)
+	process.add_argument("--surface-model", default=None)
+	process.add_argument("--limit", type=int, default=None)
+	process.add_argument("--output", default=None, help="Write .tsv (default by extension) or .json")
+	process.add_argument("--json", action="store_true", help="Print the complete batch result JSON")
 
 	translate = sub.add_parser("translate", help="Translate arbitrary Miyako or Japanese text without creating a job")
 	translate.add_argument("text")
 	translate.add_argument("--target", choices=["japanese", "miyako"], required=True)
 	translate.add_argument("--annotation-schema", dest="annotation_schema_id", type=int, required=True)
 	translate.add_argument("--region", required=True)
-	translate.add_argument("--dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...", help="Ordered target dialects; required for Japanese -> Miyako")
-	translate.add_argument("--surface-model", default=None, help="Optional nrdb-morph surface_model.json; also reads NRDB_SURFACE_MODEL")
-	translate.add_argument("--model", default="gpt-5.6", help="LLM model name; does not select the nrdb-morph model")
-	translate.add_argument("--json", action="store_true", help="Print complete translation result as JSON")
+	translate.add_argument("--dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...")
+	translate.add_argument("--surface-model", default=None)
+	translate.add_argument("--model", default="gpt-5.6")
+	translate.add_argument("--json", action="store_true")
 	output_mode = translate.add_mutually_exclusive_group()
-	output_mode.add_argument("--quiet", action="store_true", help="Explicitly select the default major-milestones output")
-	output_mode.add_argument("--verbose", action="store_true", help="Show the complete diagnostic/tool trace")
-	output_mode.add_argument("--silent", action="store_true", help="Show an unlabeled milestone progress bar, then translation and estimated cost")
-	output_mode.add_argument("--compact", action="store_true", help="Show milestone progress plus the current milestone label, then translation and estimated cost")
+	output_mode.add_argument("--quiet", action="store_true")
+	output_mode.add_argument("--verbose", action="store_true")
+	output_mode.add_argument("--silent", action="store_true")
+	output_mode.add_argument("--compact", action="store_true")
 
 	asr_review = sub.add_parser("asr-review", help="Blindly rerank ASR n-best hypotheses with NRDB linguistic evidence")
-	asr_review.add_argument("predictions", help="predictions.tsv from nrdb-asr eval-manifest --nbest")
+	asr_review.add_argument("predictions")
 	asr_review.add_argument("--out-dir", required=True)
 	asr_review.add_argument("--annotation-schema", dest="annotation_schema_id", type=int, required=True)
 	asr_review.add_argument("--region", required=True)
 	asr_review.add_argument("--dialect", dest="dialect_id", type=int, required=True)
 	asr_review.add_argument("--model", default="gpt-5.6")
-	asr_review.add_argument("--id-model", default=None, help="Optional nrdb-morph ID-sequence model; also reads NRDB_ID_MODEL")
-	asr_review.add_argument("--surface-model", default=None, help="Optional nrdb-morph surface model; also reads NRDB_SURFACE_MODEL")
-	asr_review.add_argument("--phrase-boundary-model", default=None, help="Optional nrdb-asr/nrdb-morph phrase-boundary model manifest")
+	asr_review.add_argument("--id-model", default=None)
+	asr_review.add_argument("--surface-model", default=None)
+	asr_review.add_argument("--phrase-boundary-model", default=None)
 	asr_review.add_argument("--limit", type=int, default=None)
-	asr_review.add_argument("--max-candidates", type=int, default=None, help="Inspect only the first N hypotheses from each n-best list")
-	asr_review.add_argument("--no-llm", action="store_true", help="Run only the deterministic linguistic baseline")
-	asr_review.add_argument("--json", action="store_true", help="Print complete summary JSON")
+	asr_review.add_argument("--max-candidates", type=int, default=None)
+	asr_review.add_argument("--no-llm", action="store_true")
+	asr_review.add_argument("--json", action="store_true")
 
 	show = sub.add_parser("show", help="Show audit summary for one job")
 	show.add_argument("job_id", type=int)
 
-	results = sub.add_parser("results", help="Show aggregate metrics and optionally sentence-level results for one job")
+	results = sub.add_parser("results", help="Show aggregate metrics or export job results")
 	results.add_argument("job_id", type=int)
-	results.add_argument("--show-sentences", nargs="?", const=-1, default=0, type=int, metavar="N", help="Show N sentence results; omit N to show all")
+	results.add_argument("--show-sentences", nargs="?", const=-1, default=0, type=int, metavar="N")
+	results.add_argument("--output", default=None, help="Export results as TSV")
 
 	args = parser.parse_args()
 	nrdb = NrdbClient(args.agent_url, args.morph_url)
 	if args.command == "create":
-		if args.prompt_version == "reverse-v1" and args.mode != "blind_gold":
-			parser.error("reverse-v1 currently requires --mode blind_gold for hidden-gold evaluation")
-		if args.prompt_version == "reverse-v1" and (args.translate or args.blind_translation):
-			parser.error("reverse-v1 uses Japanese as input; do not use --translate")
-		_print_json(nrdb.create_job(args.dataset_id, args.mode, args.limit, args.model, args.prompt_version, args.seed, args.translate, args.blind_translation))
+		legacy = args.mode is not None or args.prompt_version is not None or args.translate or args.blind_translation
+		if legacy:
+			mode = args.mode or "blind_gold"
+			prompt = args.prompt_version or "annotation-v8"
+			_print_json(nrdb.create_job(args.dataset_id, mode, args.limit, args.model, prompt, args.seed, args.translate, args.blind_translation))
+		else:
+			start = end = None
+			if args.sentence_id:
+				start, end = args.sentence_id
+			_print_json(nrdb.create_workflow_job(
+				args.dataset_id, args.task, args.limit, args.model, args.seed,
+				translation_evidence=args.translation_evidence, morphology_source=args.morphology_source,
+				needs_filter=args.needs, scope_text_id=args.text_id,
+				scope_sentence_start=start, scope_sentence_end=end,
+			))
 	elif args.command == "list":
 		_print_json(nrdb.jobs())
 	elif args.command == "run":
-		_print_json(run_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, surface_model=args.surface_model))
+		try:
+			value = run_workflow_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, id_model=args.id_model, surface_model=args.surface_model)
+		except RuntimeError as error:
+			if "Legacy job" not in str(error):
+				raise
+			value = run_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, surface_model=args.surface_model, id_model=args.id_model)
+		_print_json(value)
+	elif args.command == "process":
+		value = process_dataset(
+			nrdb, args.input, args.task, model_name=args.model, component=args.component,
+			annotation_schema_id=args.annotation_schema_id, region=args.region, default_dialect_id=args.dialect_id,
+			translation_evidence=args.translation_evidence, morphology_source=args.morphology_source,
+			needs=args.needs, target_dialect_ids=args.dialects, id_model=args.id_model,
+			surface_model=args.surface_model, output=args.output, limit=args.limit,
+		)
+		if args.json:
+			_print_json(value)
+		else:
+			print("processed {completed}/{selected} rows; failed={failed}; estimated_cost=${cost:.4f}{output}".format(
+				completed=value["counts"]["completed"], selected=value["counts"]["selected"],
+				failed=value["counts"]["failed"], cost=float(value["estimated_cost_usd"]),
+				output="; output=" + str(args.output) if args.output else "",
+			))
 	elif args.command == "translate":
 		if args.target == "miyako" and not args.dialects:
 			parser.error("Japanese -> Miyako translation requires --dialects ID1,ID2,...")
@@ -245,23 +318,14 @@ def main():
 		if args.json and explicit_output:
 			parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
 		if args.json:
-			display = lambda _message: None
-			value = translate_text(
-				nrdb, args.text, args.target, args.annotation_schema_id, args.region,
-				dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
-				progress=display,
-			)
+			value = translate_text(nrdb, args.text, args.target, args.annotation_schema_id, args.region, dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model, progress=lambda _message: None)
 			_print_json(value)
 		else:
 			mode = "verbose" if args.verbose else "silent" if args.silent else "compact" if args.compact else "quiet"
 			display = TranslationProgress(mode)
 			display.start()
 			try:
-				value = translate_text(
-					nrdb, args.text, args.target, args.annotation_schema_id, args.region,
-					dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
-					progress=display,
-				)
+				value = translate_text(nrdb, args.text, args.target, args.annotation_schema_id, args.region, dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model, progress=display)
 			finally:
 				display.stop()
 			if mode in {"silent", "compact"}:
@@ -279,9 +343,12 @@ def main():
 	elif args.command == "show":
 		_print_json(_show_with_linguistic_metrics(nrdb, args.job_id))
 	elif args.command == "results":
-		if args.show_sentences < -1:
-			parser.error("--show-sentences must be a non-negative number, or omitted to show all")
-		_print_results(nrdb.job_results(args.job_id), show_sentences=args.show_sentences)
+		if args.output:
+			_print_json(export_job_results_tsv(nrdb, args.job_id, args.output))
+		else:
+			if args.show_sentences < -1:
+				parser.error("--show-sentences must be a non-negative number, or omitted to show all")
+			_print_results(nrdb.job_results(args.job_id), show_sentences=args.show_sentences)
 	return 0
 
 
