@@ -43,12 +43,13 @@ Return exactly one JSON object:
 
 
 class ForwardCriticAnnotationAgent(AnnotationAgentV9):
-	"""v9 forward analysis plus active ID repair and observed-surface compatibility criticism."""
+	"""v9 forward analysis plus bounded active ID repair and observed-surface compatibility criticism."""
 
-	def __init__(self, *args, surface_model_path=None, **kwargs):
+	def __init__(self, *args, surface_model_path=None, max_active_id_surprises=3, **kwargs):
 		super().__init__(*args, **kwargs)
 		self.surface_model_path = str(surface_model_path) if surface_model_path else None
 		self.surface_critic = SurfaceModelCritic(surface_model_path) if surface_model_path else None
+		self.max_active_id_surprises = int(max_active_id_surprises)
 
 	def _surface_review(self, segmented, annotation, item, job):
 		if self.surface_critic is None:
@@ -82,11 +83,14 @@ class ForwardCriticAnnotationAgent(AnnotationAgentV9):
 			return result
 
 		evidence = result.setdefault("evidence", {})
+		# In forward mode the surface is observed data. This review is diagnostic and
+		# later acts only as a veto/compatibility signal on an ID repair; it never
+		# triggers a repair by itself.
 		original_surface_review = self._surface_review(segmented, annotation, item, job)
 		if original_surface_review is not None:
 			evidence["forward_surface_review"] = original_surface_review
 			evidence["forward_surface_model_path"] = self.surface_model_path
-			self.progress("  forward-surface: phonotactic={:.3f} strong_disagreements={}".format(
+			self.progress("  forward-surface: observed compatibility phonotactic={:.3f} strong_disagreements={} (diagnostic only)".format(
 				float(original_surface_review.get("phonotactic_mean_log_probability") or 0.0),
 				int(original_surface_review.get("strong_disagreements", 0)),
 			))
@@ -102,6 +106,15 @@ class ForwardCriticAnnotationAgent(AnnotationAgentV9):
 		if initial_surprises == 0:
 			self.progress("  forward-id: no active repair needed")
 			return result
+		if initial_surprises > self.max_active_id_surprises:
+			# A one-change repair prompt is inappropriate when the critic is diffuse.
+			# Keep the validated v9 analysis and let translation/semantic review handle
+			# the sentence instead of launching repeated speculative repair calls.
+			evidence["forward_active_id_review"]["revision_attempted"] = False
+			evidence["forward_active_id_review"]["revision_accepted"] = False
+			evidence["forward_active_id_review"]["abstained_reason"] = "diffuse_id_surprises"
+			self.progress("  forward-id: {} surprises are too diffuse for one narrow repair; critic abstains".format(initial_surprises))
+			return result
 
 		payload = {
 			"source_miyako": item["text"],
@@ -110,12 +123,23 @@ class ForwardCriticAnnotationAgent(AnnotationAgentV9):
 			"id_sequence_review": initial_compact,
 			"annotation_schema_id": int(job["annotation_schema_id"]),
 		}
-		self.progress("  forward-id: one narrow grammatical repair pass")
+		self.progress("  forward-id: one bounded narrow grammatical repair pass")
 		response = self._create_response(
 			[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
 			FORWARD_ID_REVIEW_INSTRUCTIONS, tools=[], max_output_tokens=800, text_format=FORWARD_ID_REVIEW_FORMAT,
 		)
-		candidate = json.loads((response.output_text or "").strip())
+		try:
+			candidate = json.loads((response.output_text or "").strip())
+		except (json.JSONDecodeError, TypeError, ValueError) as error:
+			# Critic failure must never restart the expensive base v9 annotation. Fail
+			# closed: retain the already validated analysis and continue to translation.
+			evidence["forward_active_id_review"]["revision_attempted"] = True
+			evidence["forward_active_id_review"]["revision_accepted"] = False
+			evidence["forward_active_id_review"]["abstained_reason"] = "malformed_critic_output"
+			evidence["forward_active_id_review"]["critic_error"] = str(error)
+			self.progress("  forward-id: critic returned malformed/empty JSON; keeping validated v9 analysis")
+			return result
+
 		candidate_annotation = str(candidate.get("annotation") or "").strip()
 		if not candidate_annotation or candidate_annotation == annotation:
 			evidence["forward_active_id_review"]["revision_attempted"] = True
