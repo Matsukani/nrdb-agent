@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from nrdb_agent.usage import UsageTracker, canonical_model, price_usage
+from nrdb_agent.usage import UsageTracker, canonical_model, classify_stage, price_usage
 
 
 def _response(model, input_tokens=1000, cached_tokens=0, output_tokens=100, reasoning_tokens=0):
@@ -33,6 +33,10 @@ def test_terra_and_luna_current_prices():
 def test_cached_input_discount_is_counted():
 	priced = price_usage("gpt-5.6-sol", 2000, 1000, 0, 100)
 	assert round(priced["estimated_cost_usd"], 6) == 0.0085
+
+
+def test_forward_id_review_stage_is_classified():
+	assert classify_stage("You are the active grammatical critic for NRDB Miyako morphemic analysis.") == "forward_id_review"
 
 
 def test_tracker_groups_usage_by_stage_and_model():
