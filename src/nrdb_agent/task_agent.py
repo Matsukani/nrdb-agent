@@ -44,6 +44,27 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 		result.setdefault("evidence", {})["shared_evidence"] = self._shared_evidence_compact()
 		return result
 
+	def _round_exhaustion_fallback(self, morph_result):
+		"""Keep the morph baseline when v9 cannot finish within its bounded tool loop."""
+		segmented = str((morph_result or {}).get("segmented") or "").strip()
+		annotation = str((morph_result or {}).get("annotation") or "").strip()
+		if not segmented or not annotation:
+			raise RuntimeError("annotation-v9 exceeded maximum tool rounds and no baseline analysis is available")
+		self.progress("  forward-v9: maximum tool rounds reached; keeping nrdb-morph baseline as uncertain")
+		return {
+			"segmented": segmented,
+			"annotation": annotation,
+			"trsl_ai": "",
+			"decision": "uncertain",
+			"confidence": 0.5,
+			"evidence": {
+				"round_exhaustion_fallback": {
+					"kept_baseline": True,
+					"reason": "annotation-v9 exceeded maximum tool rounds",
+				}
+			},
+		}
+
 	def annotate(self, item, job, morph_result):
 		policy = str(job.get("translation_evidence") or "ignore")
 		if policy not in {"ignore", "use", "required"}:
@@ -52,7 +73,12 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 		if policy == "required" and not human_translation:
 			raise ValueError("human translation is required for this morphology task")
 
-		result = self._annotation_phase_v9(item, job, morph_result)
+		try:
+			result = self._annotation_phase_v9(item, job, morph_result)
+		except RuntimeError as error:
+			if str(error) != "annotation-v9 exceeded maximum tool rounds":
+				raise
+			result = self._round_exhaustion_fallback(morph_result)
 		human_reviewed = False
 		if policy in {"use", "required"} and human_translation and result.get("annotation") and result.get("decision") != "failed":
 			result = self._review_against_human_translation(item, job, result)
