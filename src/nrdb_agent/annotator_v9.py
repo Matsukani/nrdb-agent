@@ -337,7 +337,18 @@ class AnnotationAgentV9(AnnotationAgentV8):
 				continuation.append({"role": "user", "content": "Previously retrieved compact evidence:\n" + json.dumps(evidence_summary[-6:], ensure_ascii=False)})
 			continuation.extend(_response_output_as_input(response))
 			for call in calls:
-				arguments = json.loads(call.arguments)
+				try:
+					arguments = json.loads(call.arguments)
+				except (json.JSONDecodeError, TypeError, ValueError) as error:
+					compact = {
+						"invalid_tool_arguments": True,
+						"message": "Tool arguments were malformed or truncated JSON. Retry this tool call with one complete valid JSON object, or finalize conservatively from existing evidence.",
+						"error": str(error),
+					}
+					self.progress("    -> {}(<malformed arguments>)".format(call.name))
+					self.progress("    <- {}: malformed/truncated tool arguments; returned recoverable error".format(call.name))
+					continuation.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(compact, ensure_ascii=False)})
+					continue
 				self.progress("    -> {}({})".format(call.name, self._trace_args_v9(call.name, arguments)))
 				allowed, reason = self._query_is_hotspot(call.name, arguments)
 				if not allowed:
@@ -390,122 +401,29 @@ class AnnotationAgentV9(AnnotationAgentV8):
 			return result
 		return super()._v7_tool_result(name, arguments, item, schema_id)
 
-	def _shared_evidence_compact(self):
-		return {
-			"grounded_ids": sorted(self._shared_evidence["lookup"].keys()),
-			"corpus_queries": sorted(self._shared_evidence["corpus"].keys()),
-			"form_pairs": sorted(self._shared_evidence["form"].keys()),
-		}
-
-	def _review_cache_hit(self, name, arguments):
-		if name == "ground_lexical_ids":
-			labels = [str(value or "").strip() for value in arguments.get("labels", [])]
-			return bool(labels) and all(label in self._shared_evidence["lookup"] for label in labels)
-		if name == "corpus_examples":
-			return str(arguments.get("label") or "").strip() in self._shared_evidence["corpus"]
-		if name == "form_id_support":
-			key = "{}\t{}".format(str(arguments.get("surface") or "").strip(), str(arguments.get("candidate_id") or "").strip())
-			return key in self._shared_evidence["form"]
-		return False
-
-	def _review_tool_result_v9(self, name, arguments, item, schema_id):
-		if name == "ground_lexical_ids":
-			return self._ground_lexical_ids(arguments["labels"], schema_id)
-		if name == "corpus_examples":
-			label = str(arguments.get("label") or "").strip()
-			if label in self._shared_evidence["corpus"]:
-				return self._shared_evidence["corpus"][label]
-			result = self._tool_result(name, arguments, item, schema_id)
-			self._cache_corpus(label, result)
-			return result
-		if name == "form_id_support":
-			surface = str(arguments.get("surface") or "").strip()
-			candidate = str(arguments.get("candidate_id") or "").strip()
-			key = "{}\t{}".format(surface, candidate)
-			if key in self._shared_evidence["form"]:
-				return self._shared_evidence["form"][key]
-			region = str(item.get("dialect_region") or "").strip()
-			result = self.nrdb.form_id_support(surface, candidate, region, schema_id)
-			self._cache_form(surface, candidate, result)
-			return result
-		raise ValueError("unknown review tool: {}".format(name))
-
 	def _semantic_review(self, item, job, result):
+		self.progress("  review-v9: semantic consistency review (shared evidence reuse)")
 		payload = {
 			"sentence_id": int(item["sentence_id"]), "source_text": item["text"],
-			"dialect_region": item.get("dialect_region"), "proposed_segmented": result["segmented"],
-			"proposed_annotation": result["annotation"], "proposed_translation_jp": result.get("trsl_ai", ""),
-			"translation_evidence": result.get("evidence", {}).get("translation", {}),
-			"annotation_confidence": result.get("confidence"), "annotation_schema_id": int(job["annotation_schema_id"]),
+			"segmented": result["segmented"], "annotation": result["annotation"],
+			"translation_jp": result["trsl_ai"], "annotation_schema_id": int(job["annotation_schema_id"]),
 			"shared_evidence": self._shared_evidence_compact(),
 		}
 		base_input = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
-		evidence_summary = []
-		evidence_calls = 0
-		self.progress("  review-v9: semantic consistency review (shared evidence reuse)")
-		response = self._create_response(base_input, V9_REVIEW_INSTRUCTIONS, tools=V9_REVIEW_TOOLS, max_output_tokens=900, text_format=REVIEW_FORMAT)
-		for round_index in range(1, self.max_rounds + 1):
+		response = self._create_response(base_input, V9_REVIEW_INSTRUCTIONS, tools=V9_REVIEW_TOOLS, max_output_tokens=1200, text_format=REVIEW_FORMAT)
+		for round_index in range(1, self.max_review_rounds + 1):
 			calls = [output for output in response.output if getattr(output, "type", None) == "function_call"]
 			if not calls:
-				if _response_incomplete_reason(response):
-					return self._finalize_review(base_input, evidence_summary)
-				try:
-					return self._parse_review(response.output_text)
-				except (json.JSONDecodeError, ValueError):
-					return self._finalize_review(base_input, evidence_summary)
-			self.progress("  review-v9 tool round {}: {} call(s)".format(round_index, len(calls)))
+				return self._parse_review(response.output_text, result)
 			continuation = list(base_input)
-			if evidence_summary:
-				continuation.append({"role": "user", "content": "Previously retrieved NEW review evidence:\n" + json.dumps(evidence_summary[-4:], ensure_ascii=False)})
 			continuation.extend(_response_output_as_input(response))
 			for call in calls:
 				arguments = json.loads(call.arguments)
-				cache_hit = self._review_cache_hit(call.name, arguments)
-				self.progress("    -> {}({}){}".format(call.name, self._review_trace_arguments(call.name, arguments), " [cache]" if cache_hit else ""))
-				if not cache_hit and evidence_calls >= self.max_review_evidence_calls:
-					compact = {"budget_exhausted": True, "message": "Review evidence budget exhausted; keep unless existing evidence clearly supports revision."}
+				if self._review_query_already_known(call.name, arguments):
+					compact = {"shared_evidence_reused": True, "message": "This evidence is already present in the shared cache; decide from it instead of querying again."}
 				else:
-					tool_result = self._review_tool_result_v9(call.name, arguments, item, int(job["annotation_schema_id"]))
-					compact = self._review_compact(call.name, tool_result)
-					if cache_hit:
-						compact["cache_hit"] = True
-					else:
-						evidence_calls += 1
-						evidence_summary.append({"tool": call.name, "arguments": arguments, "result": compact})
+					tool_result = self._v8_review_tool_result(call.name, arguments, item, int(job["annotation_schema_id"]))
+					compact = self._compact_review_result(call.name, tool_result)
 				continuation.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(compact, ensure_ascii=False)})
-			if evidence_calls >= self.max_review_evidence_calls:
-				return self._finalize_review(base_input, evidence_summary)
-			response = self._create_response(continuation, V9_REVIEW_INSTRUCTIONS, tools=V9_REVIEW_TOOLS, max_output_tokens=900, text_format=REVIEW_FORMAT)
-		return self._finalize_review(base_input, evidence_summary)
-
-	def annotate(self, item, job, morph_result):
-		result = self._annotation_phase_v9(item, job, morph_result)
-		if job.get("produce_translation") and result.get("annotation") and result.get("decision") != "failed":
-			translation = self._translate_frozen_v7(item, job, result)
-			result["trsl_ai"] = translation["trsl_ai"]
-			result.setdefault("evidence", {})["translation"] = translation["translation_evidence"]
-			result["evidence"]["translation"]["confidence"] = translation["confidence"]
-		if not result.get("trsl_ai") or result.get("decision") == "failed":
-			return result
-		review = self._semantic_review(item, job, result)
-		result.setdefault("evidence", {})["semantic_review"] = review
-		result["evidence"]["shared_evidence"] = self._shared_evidence_compact()
-		self.progress("  review-v9: action={} confidence={:.3f}".format(review["action"], review["confidence"]))
-		if review["action"] != "revise":
-			return result
-		if review["segmented"] == result["segmented"] and review["annotation"] == result["annotation"]:
-			result["evidence"]["semantic_review"]["action"] = "keep"
-			result["evidence"]["semantic_review"]["note"] = "Revision requested but analysis was unchanged; kept original."
-			return result
-		validation = self.nrdb.validate_analysis(item["text"], review["segmented"], review["annotation"])
-		result["evidence"]["semantic_review"]["validation"] = validation
-		if not validation.get("valid"):
-			self.progress("  review-v9: revision rejected by validator; keeping original")
-			result["evidence"]["semantic_review"]["action"] = "keep"
-			result["evidence"]["semantic_review"]["note"] = "Proposed revision failed structural validation; original kept."
-			return result
-		self.progress("  review-v9: revised annotation accepted")
-		result["segmented"] = review["segmented"]
-		result["annotation"] = review["annotation"]
-		result["confidence"] = min(1.0, max(float(result.get("confidence", 0.0)), review["confidence"]))
-		return result
+			response = self._create_response(continuation, V9_REVIEW_INSTRUCTIONS, tools=V9_REVIEW_TOOLS, max_output_tokens=1200, text_format=REVIEW_FORMAT)
+		return self._force_review_finalization(base_input, result, "v9 review tool budget exhausted")
