@@ -4,6 +4,7 @@ import os
 from .annotator import AnnotationAgent
 from .annotator_v7 import AnnotationAgentV7
 from .annotator_v8 import AnnotationAgentV8
+from .annotator_v9 import AnnotationAgentV9
 from .reverse_agent import ReverseIdAgent
 from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
@@ -11,6 +12,19 @@ from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 
 
 AGENT_JSON_ATTEMPTS = 3
+
+
+def _trace_morph_inference(progress, morph):
+	inference = morph.get("inference") if isinstance(morph, dict) else None
+	if not isinstance(inference, dict):
+		return
+	progress(
+		"  morph: model={} ({}) backend={} decoding={} top-k={} id-weight={}".format(
+			inference.get("model_id", ""), inference.get("model_label", ""),
+			inference.get("backend", ""), inference.get("segmentation_mode", ""),
+			inference.get("segmentation_top_k", ""), inference.get("segmentation_id_weight", ""),
+		)
+	)
 
 
 def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, target_dialects=None, surface_model=None, id_model=None):
@@ -33,6 +47,8 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 		agent_class = SyntaxAwareReverseSurfaceAgent
 	elif prompt_version == "reverse-v1":
 		agent_class = ReverseIdAgent
+	elif prompt_version == "annotation-v9":
+		agent_class = AnnotationAgentV9
 	elif prompt_version == "annotation-v8":
 		agent_class = AnnotationAgentV8
 	elif prompt_version == "annotation-v7":
@@ -44,6 +60,8 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 		agent_kwargs["surface_model_path"] = surface_model
 		agent_kwargs["id_model_path"] = id_model
 	elif agent_class is IdCriticSyntaxAwareReverseSurfaceAgent:
+		agent_kwargs["id_model_path"] = id_model
+	elif agent_class is AnnotationAgentV9:
 		agent_kwargs["id_model_path"] = id_model
 	agent = agent_class(nrdb, job["model_name"], **agent_kwargs)
 	nrdb.set_job_status(job_id, "running")
@@ -64,7 +82,10 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 				else:
 					progress("  morph: analyze")
 					morph = nrdb.morph_analyze(item["text"], item["dialect_id"], job["annotation_schema_id"])
+					_trace_morph_inference(progress, morph)
 					progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
+					if prompt_version == "annotation-v9" and id_model:
+						progress("  forward IDs: nrdb-morph critic={}".format(id_model))
 				for attempt in range(1, AGENT_JSON_ATTEMPTS + 1):
 					try:
 						result = agent.annotate(item, job, morph)
