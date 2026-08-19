@@ -53,7 +53,7 @@ FORM_ID_SUPPORT_BATCH_TOOL = {
 					"properties": {
 						"surface": {"type": "string", "maxLength": 128},
 						"candidate_ids": {
-							"type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": True,
+							"type": "array", "minItems": 1, "maxItems": 5,
 							"items": {"type": "string", "maxLength": 128},
 						},
 					},
@@ -121,12 +121,6 @@ class AnnotationAgentV9(AnnotationAgentV8):
 			return None
 
 	def _alternative_margin(self, segment):
-		"""Return a normalized-ish top-vs-runner-up margin only when real scores exist.
-
-		The morph API often exposes alternatives merely as candidates/support counts.
-		Their existence alone is not uncertainty. Only explicit probability/confidence/
-		score fields may trigger a margin test.
-		"""
 		values = []
 		for alt in segment.get("alternatives", []) or []:
 			for key in ("probability", "confidence", "score"):
@@ -169,7 +163,6 @@ class AnnotationAgentV9(AnnotationAgentV8):
 				confidence = self._numeric(confidence_raw)
 				margin = self._alternative_margin(segment)
 				reasons = []
-				# Missing per-segment confidence is UNKNOWN, not automatically uncertain.
 				if confidence is not None and confidence < 0.80:
 					reasons.append("low_confidence")
 				if margin is not None and margin < 0.15:
@@ -197,7 +190,6 @@ class AnnotationAgentV9(AnnotationAgentV8):
 		if surface in set(context.get("uncertain_surfaces", [])):
 			return True
 		original = set(context.get("surface_labels", {}).get(surface, []))
-		# Checking a different candidate is itself a meaningful hypothesis test.
 		if candidate and original and candidate not in original:
 			return True
 		return False
@@ -264,7 +256,6 @@ class AnnotationAgentV9(AnnotationAgentV8):
 					candidate_rows.append(compact)
 				rows.append({"surface": surface, "candidates": candidate_rows})
 			return {"region": region or None, "items": rows}
-
 		if name == "lookup_id":
 			label = str(arguments.get("label") or "").strip()
 			if label in self._shared_evidence["lookup"]:
@@ -340,7 +331,6 @@ class AnnotationAgentV9(AnnotationAgentV8):
 				result["evidence"]["forward_query_optimization"]["evidence_calls_used"] = evidence_calls
 				self.progress("  final: decision={} confidence={:.3f}".format(result["decision"], result["confidence"]))
 				return result
-
 			self.progress("  tool round {}: {} call(s)".format(round_index, len(calls)))
 			continuation = list(base_input)
 			if evidence_summary:
@@ -369,8 +359,6 @@ class AnnotationAgentV9(AnnotationAgentV8):
 		raise RuntimeError("annotation-v9 exceeded maximum tool rounds")
 
 	def _ground_lexical_ids(self, labels, schema_id):
-		# Same v7 contract, but reuse lookup evidence already collected by annotation
-		# or a previous translation/review phase.
 		grounded = []
 		for raw_label in labels[:12]:
 			label = str(raw_label or "").strip()
@@ -465,7 +453,6 @@ class AnnotationAgentV9(AnnotationAgentV8):
 					return self._parse_review(response.output_text)
 				except (json.JSONDecodeError, ValueError):
 					return self._finalize_review(base_input, evidence_summary)
-
 			self.progress("  review-v9 tool round {}: {} call(s)".format(round_index, len(calls)))
 			continuation = list(base_input)
 			if evidence_summary:
@@ -500,7 +487,6 @@ class AnnotationAgentV9(AnnotationAgentV8):
 			result["evidence"]["translation"]["confidence"] = translation["confidence"]
 		if not result.get("trsl_ai") or result.get("decision") == "failed":
 			return result
-
 		review = self._semantic_review(item, job, result)
 		result.setdefault("evidence", {})["semantic_review"] = review
 		result["evidence"]["shared_evidence"] = self._shared_evidence_compact()
