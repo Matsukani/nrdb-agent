@@ -1,6 +1,6 @@
 from io import StringIO
 
-from nrdb_agent.cli_output import TranslationProgress, estimated_cost_text, silent_translation_line
+from nrdb_agent.cli_output import TranslationProgress, WorkflowProgress, estimated_cost_text, silent_translation_line
 
 
 def _value():
@@ -65,3 +65,14 @@ def test_compact_progress_tracks_current_milestone_label():
 	assert trace.getvalue() == ""
 	assert "grammatical critic" in bar_stream.getvalue()
 	assert "===" in bar_stream.getvalue()
+
+
+def test_workflow_progress_streams_translation_and_item_cost():
+	stream = StringIO()
+	progress = WorkflowProgress("quiet", stream=stream, progress_stream=StringIO())
+	progress.item_start(2, 100, "sentence 15456")
+	progress.item_result(2, 100, "translate", _value(), "sentence 15456")
+	progress.job_summary(100, 100, 0.8427, failed=0, pricing_complete=True)
+	value = stream.getvalue()
+	assert "[2/100] 東はどこにあるのか。 ($0.0901)" in value
+	assert "100/100 completed | failed=0 | estimated total $0.8427" in value
