@@ -1,3 +1,4 @@
+import json
 import os
 
 from .annotator_v9 import AnnotationAgentV9
@@ -5,6 +6,9 @@ from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
 from .usage import UsageTracker, tracked_client
+
+
+DIRECT_JSON_ATTEMPTS = 3
 
 
 def _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids=None):
@@ -47,6 +51,23 @@ def _trace_usage(progress, usage):
 		))
 
 
+def _annotate_with_json_retry(agent, item, job, morph, progress):
+	last_error = None
+	for attempt in range(1, DIRECT_JSON_ATTEMPTS + 1):
+		try:
+			return agent.annotate(item, job, morph)
+		except json.JSONDecodeError as error:
+			last_error = error
+			if attempt >= DIRECT_JSON_ATTEMPTS:
+				raise
+			progress("  llm: malformed/truncated tool or final JSON (attempt {}/{}): {}; retrying translation".format(
+				attempt, DIRECT_JSON_ATTEMPTS, error,
+			))
+	if last_error:
+		raise last_error
+	raise RuntimeError("direct translation JSON retry failed")
+
+
 def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None, model_name="gpt-5.6", surface_model=None, id_model=None, openai_client=None, progress=print):
 	text = str(text or "").strip()
 	region = str(region or "").strip()
@@ -79,7 +100,7 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 		item = {"sentence_id": 0, "dialect_id": dialect_id, "dialect_region": region, "text": text, "translation_jp": None}
 		job = {"annotation_schema_id": annotation_schema_id, "model_name": model_name, "prompt_version": "annotation-v9", "produce_translation": True, "blind_translation": False}
 		agent = AnnotationAgentV9(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
-		result = agent.annotate(item, job, morph)
+		result = _annotate_with_json_retry(agent, item, job, morph, progress)
 		usage = usage_tracker.summary()
 		_trace_usage(progress, usage)
 		return {
@@ -107,7 +128,7 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 		agent = IdCriticSyntaxAwareReverseSurfaceAgent(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
 	else:
 		agent = SyntaxAwareReverseSurfaceAgent(nrdb, model_name, client=client, progress=progress)
-	result = agent.annotate(item, job, None)
+	result = _annotate_with_json_retry(agent, item, job, None, progress)
 	usage = usage_tracker.summary()
 	_trace_usage(progress, usage)
 	return {
