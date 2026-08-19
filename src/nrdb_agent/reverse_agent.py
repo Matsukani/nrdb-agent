@@ -20,10 +20,13 @@ Core linguistic model: asymmetric dual lexical access.
 
 Evidence-efficiency rules:
 - Your FIRST lexical evidence action should normally be search_japanese_batch. Put several high-impact lexical predicates/arguments into one call instead of spending one tool call per word.
+- Queries are DATABASE LEXICAL KEYS, not web-search strings. Every query must be a bare Japanese lexical word or short lexical expression.
+- NEVER append the target region, dialect name, 琉球, 方言, Miyako, or similar scope/helper words to a lexical query. Region and dialect scope are supplied separately by the host.
+- GOOD batch queries: ['食べる', '山羊汁', '今', '何']. BAD: ['食べる 宮古', '宮古方言 食べる', '今 宮古'].
 - Batch only concepts whose resolution can materially affect the annotation. Main/subordinate predicates and ambiguous core arguments have priority over modifiers.
 - Do NOT query concepts that are transparently appropriate for productive n: recruitment unless local-vs-Japanese choice is genuinely uncertain.
 - Do NOT spend corpus queries on routine grammar in this phase. A separate statistical ID-sequence critic will inspect grammatical packaging after your proposal and will request corpus evidence only for actual surprise hotspots.
-- After a batch result, use search_japanese_evidence only for a remaining ambiguity that the batch did not resolve.
+- After a batch result, use search_japanese_evidence only for ONE remaining lexical ambiguity. Give it one bare word/short expression such as 食べる or 食べに行く; never concatenate two sentence fragments into one query.
 - Use lookup_id only when a returned candidate is sparse, competing, semantically ambiguous, or otherwise decisive. Do not automatically double-verify a strong unique batch result.
 - One search_japanese_batch call counts as one evidence call regardless of how many queries it contains.
 
@@ -74,7 +77,7 @@ REVERSE_FORMAT = {
 SEARCH_JAPANESE_TOOL = {
 	"type": "function",
 	"name": "search_japanese_evidence",
-	"description": "Targeted follow-up search for one unresolved Japanese lexical ambiguity after the batch search.",
+	"description": "Targeted follow-up search for ONE unresolved bare Japanese lexical word or short expression after the batch search. Region/dialect scope is supplied separately; never put scope words in query.",
 	"parameters": {
 		"type": "object",
 		"properties": {
@@ -90,7 +93,7 @@ SEARCH_JAPANESE_TOOL = {
 SEARCH_JAPANESE_BATCH_TOOL = {
 	"type": "function",
 	"name": "search_japanese_batch",
-	"description": "Batch lexical discovery for several high-impact Japanese concepts in ONE evidence call. Use this first. Each query searches bilingual lexical resources and translated corpus evidence; choose predicates/core arguments whose lexical resolution matters and omit obvious productive n: material.",
+	"description": "Batch lexical discovery for several high-impact BARE Japanese lexical concepts in ONE evidence call. Queries are database keys, not web searches: never append 宮古, dialect names, 方言, 琉球, Miyako, etc.; scope is supplied separately by the host.",
 	"parameters": {
 		"type": "object",
 		"properties": {
@@ -118,6 +121,29 @@ def _tool_by_name(name):
 # Grammar corpus queries are intentionally absent here. The downstream ID critic
 # receives that tool only after it has identified a strong grammatical surprise.
 REVERSE_TOOLS = [SEARCH_JAPANESE_BATCH_TOOL, SEARCH_JAPANESE_TOOL, _tool_by_name("lookup_id")]
+
+
+_QUERY_SCOPE_HELPERS = ("方言", "琉球", "琉球語", "琉球諸語", "Miyako", "miyako")
+
+
+def _sanitize_japanese_query(value, region=None):
+	query = " ".join(str(value or "").strip().split())
+	if not query:
+		return ""
+	remove = list(_QUERY_SCOPE_HELPERS)
+	region = str(region or "").strip()
+	if region:
+		remove.append(region)
+	for helper in remove:
+		query = query.replace(helper, " ")
+	return " ".join(query.split()).strip(" 、,，・")
+
+
+def _compound_followup_query(query):
+	# Lexical expressions in Japanese normally do not need ASCII spaces. A residual
+	# space after scope sanitization is a strong signal that the model concatenated
+	# multiple pseudo-search phrases (e.g. '何を食べている 山羊汁を食べている').
+	return bool(query and " " in query)
 
 
 class ReverseIdAgent(AnnotationAgent):
@@ -148,12 +174,12 @@ class ReverseIdAgent(AnnotationAgent):
 		if name == "search_japanese_batch":
 			queries = []
 			for value in arguments.get("queries", []):
-				query = str(value or "").strip()
+				query = _sanitize_japanese_query(value, item.get("dialect_region"))
 				if query and query not in queries:
 					queries.append(query)
 			queries = queries[:8]
 			if not queries:
-				raise ValueError("search_japanese_batch requires at least one non-empty query")
+				return {"success": False, "rejected": True, "queries": [], "message": "Batch queries became empty after removing region/dialect helper words. Retry with bare Japanese lexical expressions only."}
 			limit = min(6, max(1, int(arguments.get("limit", 5))))
 			return {
 				"success": True,
@@ -161,10 +187,17 @@ class ReverseIdAgent(AnnotationAgent):
 				"results": [self._one_japanese_search(query, item, schema_id, limit) for query in queries],
 			}
 		if name == "search_japanese_evidence":
-			return self._one_japanese_search(arguments["query"], item, schema_id, arguments["limit"])
+			query = _sanitize_japanese_query(arguments["query"], item.get("dialect_region"))
+			if not query:
+				return {"success": False, "rejected": True, "query": "", "message": "Follow-up query became empty after removing scope/helper words. Retry with one bare Japanese lexical expression."}
+			if _compound_followup_query(query):
+				return {"success": False, "rejected": True, "query": query, "message": "Follow-up search accepts ONE bare Japanese lexical word/short expression, not multiple space-separated sentence fragments. Split the ambiguity and query only the decisive expression."}
+			return self._one_japanese_search(query, item, schema_id, arguments["limit"])
 		return self._tool_result(name, arguments, item, schema_id)
 
 	def _compact_single_search(self, result, lexical_limit=6, example_limit=4):
+		if result.get("rejected"):
+			return {"query": result.get("query", ""), "rejected": True, "message": result.get("message", "")}
 		lexical = []
 		for entry in result.get("lexical_entries", [])[:lexical_limit]:
 			lexical.append({
@@ -183,6 +216,8 @@ class ReverseIdAgent(AnnotationAgent):
 
 	def _compact_reverse(self, name, result):
 		if name == "search_japanese_batch":
+			if result.get("rejected"):
+				return {"queries": result.get("queries", []), "rejected": True, "message": result.get("message", "")}
 			return {
 				"queries": result.get("queries", []),
 				"results": [self._compact_single_search(value, lexical_limit=5, example_limit=3) for value in result.get("results", [])[:8]],
@@ -199,12 +234,14 @@ class ReverseIdAgent(AnnotationAgent):
 		return _trace_arguments(name, arguments)
 
 	def _trace_result_reverse(self, name, result):
+		if result.get("rejected"):
+			return "rejected ({})".format(result.get("message", "invalid lexical query"))
 		if name == "search_japanese_batch":
 			lexical = sum(len(value.get("lexical_entries", [])) for value in result.get("results", []))
 			examples = sum(len(value.get("corpus_examples", [])) for value in result.get("results", []))
-			return "queries={} lexical={} examples={}".format(len(result.get("results", [])), lexical, examples)
+			return "queries={} actual={} lexical={} examples={}".format(len(result.get("results", [])), result.get("queries", []), lexical, examples)
 		if name == "search_japanese_evidence":
-			return "lexical={} examples={}".format(len(result.get("lexical_entries", [])), len(result.get("corpus_examples", [])))
+			return "query={!r} lexical={} examples={}".format(result.get("query", ""), len(result.get("lexical_entries", [])), len(result.get("corpus_examples", [])))
 		return _trace_result(name, result)
 
 	def _finalize(self, base_input, evidence_summary, reason):
@@ -248,7 +285,7 @@ class ReverseIdAgent(AnnotationAgent):
 			if not calls:
 				if not batch_searched:
 					response = self._create_response(
-						base_input + [{"role": "user", "content": "Before finalizing, make ONE search_japanese_batch call covering the high-impact lexical predicates/arguments whose local realization matters. A one-item batch is fine for a very short sentence. Do not query routine grammar or obvious productive n: material."}],
+						base_input + [{"role": "user", "content": "Before finalizing, make ONE search_japanese_batch call covering the high-impact lexical predicates/arguments whose local realization matters. Use BARE Japanese lexical expressions only (e.g. 食べる, 山羊汁, 今, 何). Never append 宮古/dialect names because scope is already supplied separately."}],
 						REVERSE_INSTRUCTIONS, tools=REVERSE_TOOLS, max_output_tokens=900,
 					)
 					continue
@@ -275,9 +312,10 @@ class ReverseIdAgent(AnnotationAgent):
 					tool_result = self._tool_result_reverse(call.name, arguments, item, int(job["annotation_schema_id"]))
 					compact = self._compact_reverse(call.name, tool_result)
 					self.progress("    <- {}: {}".format(call.name, self._trace_result_reverse(call.name, tool_result)))
-					evidence_calls += 1
-					if call.name == "search_japanese_batch":
-						batch_searched = True
+					if not tool_result.get("rejected"):
+						evidence_calls += 1
+						if call.name == "search_japanese_batch":
+							batch_searched = True
 					evidence_summary.append({"tool": call.name, "arguments": arguments, "result": compact})
 				continuation.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(compact, ensure_ascii=False)})
 			if evidence_calls >= self.max_reverse_evidence_calls:
