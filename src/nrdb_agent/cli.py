@@ -199,8 +199,10 @@ def main():
 	translate.add_argument("--model", default="gpt-5.6", help="LLM model name; does not select the nrdb-morph model")
 	translate.add_argument("--json", action="store_true", help="Print complete translation result as JSON")
 	output_mode = translate.add_mutually_exclusive_group()
-	output_mode.add_argument("--quiet", action="store_true", help="Show only major translation milestones and the final result")
-	output_mode.add_argument("--silent", action="store_true", help="Show only a spinner while working, then translation and estimated cost")
+	output_mode.add_argument("--quiet", action="store_true", help="Explicitly select the default major-milestones output")
+	output_mode.add_argument("--verbose", action="store_true", help="Show the complete diagnostic/tool trace")
+	output_mode.add_argument("--silent", action="store_true", help="Show an unlabeled milestone progress bar, then translation and estimated cost")
+	output_mode.add_argument("--compact", action="store_true", help="Show milestone progress plus the current milestone label, then translation and estimated cost")
 
 	asr_review = sub.add_parser("asr-review", help="Blindly rerank ASR n-best hypotheses with NRDB linguistic evidence")
 	asr_review.add_argument("predictions", help="predictions.tsv from nrdb-asr eval-manifest --nbest")
@@ -239,25 +241,33 @@ def main():
 	elif args.command == "translate":
 		if args.target == "miyako" and not args.dialects:
 			parser.error("Japanese -> Miyako translation requires --dialects ID1,ID2,...")
-		if args.json and (args.quiet or args.silent):
-			parser.error("--json cannot be combined with --quiet or --silent")
-		mode = "silent" if args.silent else "quiet" if args.quiet else "default"
-		display = TranslationProgress(mode)
-		display.start()
-		try:
+		explicit_output = args.quiet or args.verbose or args.silent or args.compact
+		if args.json and explicit_output:
+			parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
+		if args.json:
+			display = lambda _message: None
 			value = translate_text(
 				nrdb, args.text, args.target, args.annotation_schema_id, args.region,
 				dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
 				progress=display,
 			)
-		finally:
-			display.stop()
-		if args.json:
 			_print_json(value)
-		elif args.silent:
-			print(silent_translation_line(value))
 		else:
-			_print_translation(value)
+			mode = "verbose" if args.verbose else "silent" if args.silent else "compact" if args.compact else "quiet"
+			display = TranslationProgress(mode)
+			display.start()
+			try:
+				value = translate_text(
+					nrdb, args.text, args.target, args.annotation_schema_id, args.region,
+					dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
+					progress=display,
+				)
+			finally:
+				display.stop()
+			if mode in {"silent", "compact"}:
+				print(silent_translation_line(value))
+			else:
+				_print_translation(value)
 	elif args.command == "asr-review":
 		value = review_asr_predictions(
 			nrdb, args.predictions, args.out_dir, args.annotation_schema_id, args.region, args.dialect_id,
