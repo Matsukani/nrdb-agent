@@ -1,9 +1,12 @@
 import os
 
+from openai import OpenAI
+
 from .annotator_v9 import AnnotationAgentV9
 from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
+from .usage import UsageTracker, tracked_client
 
 
 def _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids=None):
@@ -37,6 +40,23 @@ def _trace_morph_provenance(progress, morph):
 	)
 
 
+def _trace_usage(progress, usage):
+	totals = usage.get("totals", {})
+	cost = totals.get("estimated_cost_usd")
+	cost_text = "unknown" if not usage.get("pricing_complete") else "${:.4f}".format(float(cost or 0.0))
+	progress(
+		"  API usage: requests={} input={} cached={} output={} reasoning={} estimated_cost={}".format(
+			totals.get("requests", 0), totals.get("input_tokens", 0), totals.get("cached_input_tokens", 0),
+			totals.get("output_tokens", 0), totals.get("reasoning_tokens", 0), cost_text,
+		)
+	)
+	for stage, values in usage.get("by_stage", {}).items():
+		progress("    cost {}: requests={} tokens={}+{} cost=${:.4f}".format(
+			stage, values.get("requests", 0), values.get("input_tokens", 0), values.get("output_tokens", 0),
+			float(values.get("estimated_cost_usd") or 0.0),
+		))
+
+
 def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None, model_name="gpt-5.6", surface_model=None, id_model=None, openai_client=None, progress=print):
 	text = str(text or "").strip()
 	region = str(region or "").strip()
@@ -54,10 +74,13 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	dialects = _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids)
 	nrdb.exclude_job_id = 0
 	id_model = id_model or os.environ.get("NRDB_ID_MODEL")
+	usage_tracker = UsageTracker()
+	base_client = openai_client or OpenAI()
+	client = tracked_client(base_client, usage_tracker)
 
 	if target == "japanese":
 		dialect_id = dialects[0]
-		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} forward=annotation-v9".format(region, dialect_id, annotation_schema_id))
+		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} forward=annotation-v9 model={}".format(region, dialect_id, annotation_schema_id, model_name))
 		progress("  morph: analyze")
 		morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
 		_trace_morph_provenance(progress, morph)
@@ -79,10 +102,12 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			"blind_translation": False,
 		}
 		agent = AnnotationAgentV9(
-			nrdb, model_name, client=openai_client, progress=progress,
+			nrdb, model_name, client=client, progress=progress,
 			id_model_path=id_model,
 		)
 		result = agent.annotate(item, job, morph)
+		usage = usage_tracker.summary()
+		_trace_usage(progress, usage)
 		return {
 			"direction": "miyako_to_japanese",
 			"source": text,
@@ -90,18 +115,20 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			"annotation_schema_id": annotation_schema_id,
 			"morph_dialect_id": dialect_id,
 			"morph_inference": _morph_provenance(morph),
+			"llm_model": model_name,
 			"segmented": result.get("segmented", ""),
 			"annotation": result.get("annotation", ""),
 			"translation": result.get("trsl_ai", ""),
 			"decision": result.get("decision"),
 			"confidence": result.get("confidence"),
+			"api_usage": usage,
 			"evidence": result.get("evidence", {}),
 		}
 
 	if not dialect_ids:
 		raise ValueError("Japanese -> Miyako translation requires an ordered --dialects list")
 	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
-	progress("translate: Japanese -> Miyako | region={} dialects={} schema={}".format(region, dialects, annotation_schema_id))
+	progress("translate: Japanese -> Miyako | region={} dialects={} schema={} model={}".format(region, dialects, annotation_schema_id, model_name))
 	if id_model:
 		progress("  ID critic: {}".format(id_model))
 	if surface_model:
@@ -123,25 +150,29 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	}
 	if surface_model:
 		agent = SurfaceCriticReverseAgent(
-			nrdb, model_name, client=openai_client, progress=progress,
+			nrdb, model_name, client=client, progress=progress,
 			surface_model_path=surface_model, id_model_path=id_model,
 		)
 	elif id_model:
 		agent = IdCriticSyntaxAwareReverseSurfaceAgent(
-			nrdb, model_name, client=openai_client, progress=progress, id_model_path=id_model,
+			nrdb, model_name, client=client, progress=progress, id_model_path=id_model,
 		)
 	else:
-		agent = SyntaxAwareReverseSurfaceAgent(nrdb, model_name, client=openai_client, progress=progress)
+		agent = SyntaxAwareReverseSurfaceAgent(nrdb, model_name, client=client, progress=progress)
 	result = agent.annotate(item, job, None)
+	usage = usage_tracker.summary()
+	_trace_usage(progress, usage)
 	return {
 		"direction": "japanese_to_miyako",
 		"source": text,
 		"region": region,
 		"annotation_schema_id": annotation_schema_id,
 		"target_dialect_ids": dialects,
+		"llm_model": model_name,
 		"annotation": result.get("annotation", ""),
 		"translation": result.get("segmented", ""),
 		"decision": result.get("decision"),
 		"confidence": result.get("confidence"),
+		"api_usage": usage,
 		"evidence": result.get("evidence", {}),
 	}
