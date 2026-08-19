@@ -44,13 +44,13 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 		result.setdefault("evidence", {})["shared_evidence"] = self._shared_evidence_compact()
 		return result
 
-	def _round_exhaustion_fallback(self, morph_result):
-		"""Keep the morph baseline when v9 cannot finish within its bounded tool loop."""
+	def _baseline_fallback(self, morph_result, reason, progress_message):
+		"""Keep the morph baseline when bounded v9 review cannot produce a safe final analysis."""
 		segmented = str((morph_result or {}).get("segmented") or "").strip()
 		annotation = str((morph_result or {}).get("annotation") or "").strip()
 		if not segmented or not annotation:
-			raise RuntimeError("annotation-v9 exceeded maximum tool rounds and no baseline analysis is available")
-		self.progress("  forward-v9: maximum tool rounds reached; keeping nrdb-morph baseline as uncertain")
+			raise RuntimeError("{} and no baseline analysis is available".format(reason))
+		self.progress(progress_message)
 		return {
 			"segmented": segmented,
 			"annotation": annotation,
@@ -58,12 +58,26 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 			"decision": "uncertain",
 			"confidence": 0.5,
 			"evidence": {
-				"round_exhaustion_fallback": {
+				"v9_fallback": {
 					"kept_baseline": True,
-					"reason": "annotation-v9 exceeded maximum tool rounds",
+					"reason": reason,
 				}
 			},
 		}
+
+	def _round_exhaustion_fallback(self, morph_result):
+		return self._baseline_fallback(
+			morph_result,
+			"annotation-v9 exceeded maximum tool rounds",
+			"  forward-v9: maximum tool rounds reached; keeping nrdb-morph baseline as uncertain",
+		)
+
+	def _malformed_final_fallback(self, morph_result, error):
+		return self._baseline_fallback(
+			morph_result,
+			"annotation-v9 returned malformed/empty final JSON: {}".format(error),
+			"  forward-v9: malformed/empty final JSON; keeping nrdb-morph baseline as uncertain",
+		)
 
 	def annotate(self, item, job, morph_result):
 		policy = str(job.get("translation_evidence") or "ignore")
@@ -79,6 +93,11 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 			if str(error) != "annotation-v9 exceeded maximum tool rounds":
 				raise
 			result = self._round_exhaustion_fallback(morph_result)
+		except ValueError as error:
+			# Final structured output can occasionally be empty, truncated, or invalid
+			# after a valid sequence of tool calls. Never discard a paid row for a
+			# formatting failure: preserve the specialized morph baseline instead.
+			result = self._malformed_final_fallback(morph_result, error)
 		human_reviewed = False
 		if policy in {"use", "required"} and human_translation and result.get("annotation") and result.get("decision") != "failed":
 			result = self._review_against_human_translation(item, job, result)
