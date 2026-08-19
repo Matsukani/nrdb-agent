@@ -1,0 +1,174 @@
+import json
+import os
+
+from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
+from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
+from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
+from .task_agent import TaskAwareAnnotationAgent
+from .usage import UsageTracker, tracked_client
+
+
+TASKS = {"morph", "translate", "morph-translate", "reverse"}
+TRANSLATION_EVIDENCE_POLICIES = {"ignore", "use", "required"}
+MORPHOLOGY_SOURCES = {"predict", "existing", "auto"}
+
+
+def _existing_morphology(item):
+	segmented = str(item.get("existing_segmented") or item.get("segmented") or "").strip()
+	annotation = str(item.get("existing_annotation") or item.get("annotation") or "").strip()
+	return segmented, annotation
+
+
+def _usage_cost(usage):
+	try:
+		return float((usage.get("totals") or {}).get("estimated_cost_usd") or 0.0)
+	except (AttributeError, TypeError, ValueError):
+		return 0.0
+
+
+def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt-5.6",
+	translation_evidence="ignore", morphology_source="predict", target_dialect_ids=None,
+	id_model=None, surface_model=None, openai_client=None, progress=print):
+	task = str(task or "morph")
+	translation_evidence = str(translation_evidence or "ignore")
+	morphology_source = str(morphology_source or "predict")
+	if task not in TASKS:
+		raise ValueError("invalid task: {}".format(task))
+	if translation_evidence not in TRANSLATION_EVIDENCE_POLICIES:
+		raise ValueError("invalid translation_evidence: {}".format(translation_evidence))
+	if morphology_source not in MORPHOLOGY_SOURCES:
+		raise ValueError("invalid morphology_source: {}".format(morphology_source))
+
+	annotation_schema_id = int(annotation_schema_id)
+	dialect_id = int(item.get("dialect_id") or item.get("target_dialect_id") or 0)
+	if dialect_id <= 0:
+		raise ValueError("item has no valid dialect_id")
+	region = str(item.get("dialect_region") or region or "").strip()
+	text = str(item.get("text") or "").strip()
+	if task != "reverse" and not text:
+		raise ValueError("item has no Miyako source text")
+
+	id_model = id_model or os.environ.get("NRDB_ID_MODEL")
+	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
+	tracker = UsageTracker()
+	client = tracked_client(openai_client, tracker)
+
+	if task == "reverse":
+		japanese = str(item.get("translation_jp") or item.get("translation") or item.get("japanese") or text or "").strip()
+		if not japanese:
+			raise ValueError("reverse task requires Japanese input")
+		dialects = [int(value) for value in (target_dialect_ids or [dialect_id])]
+		reverse_item = {
+			"sentence_id": int(item.get("sentence_id") or item.get("row_id") or 0),
+			"dialect_id": dialects[0], "dialect_region": region, "text": "", "translation_jp": japanese,
+		}
+		job = {
+			"annotation_schema_id": annotation_schema_id, "model_name": model_name,
+			"prompt_version": "reverse-v1", "produce_translation": False,
+			"blind_translation": False, "target_dialect_ids": dialects,
+		}
+		if surface_model:
+			agent = SurfaceCriticReverseAgent(nrdb, model_name, client=client, progress=progress, surface_model_path=surface_model, id_model_path=id_model)
+		elif id_model:
+			agent = IdCriticSyntaxAwareReverseSurfaceAgent(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
+		else:
+			agent = SyntaxAwareReverseSurfaceAgent(nrdb, model_name, client=client, progress=progress)
+		result = agent.annotate(reverse_item, job, None)
+		usage = tracker.summary()
+		return {
+			"segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""),
+			"translation": result.get("segmented", ""), "decision": result.get("decision"),
+			"confidence": result.get("confidence"), "evidence": result.get("evidence", {}),
+			"api_usage": usage, "estimated_cost_usd": _usage_cost(usage), "model": model_name,
+		}
+
+	segmented, annotation = _existing_morphology(item)
+	has_existing = bool(segmented and annotation)
+	use_existing = morphology_source == "existing" or (morphology_source == "auto" and has_existing)
+	if morphology_source == "existing" and not has_existing:
+		raise ValueError("morphology_source=existing requires segmentation and annotation")
+
+	human_translation = str(item.get("translation_jp") or item.get("translation") or "").strip()
+	if translation_evidence == "required" and task in {"morph", "morph-translate"} and not human_translation:
+		raise ValueError("translation_evidence=required but this item has no human translation")
+
+	forward_item = {
+		"sentence_id": int(item.get("sentence_id") or item.get("row_id") or 0),
+		"dialect_id": dialect_id, "dialect_region": region, "text": text,
+		"translation_jp": human_translation if translation_evidence in {"use", "required"} else None,
+	}
+	job = {
+		"annotation_schema_id": annotation_schema_id, "model_name": model_name,
+		"prompt_version": "annotation-v9", "task": task,
+		"translation_evidence": translation_evidence,
+		"morphology_source": morphology_source,
+		"produce_translation": task in {"translate", "morph-translate"},
+		"blind_translation": False,
+	}
+	agent = TaskAwareAnnotationAgent(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
+
+	if use_existing:
+		if task == "morph":
+			result = {
+				"segmented": segmented, "annotation": annotation, "trsl_ai": "",
+				"decision": "proposed", "confidence": 1.0,
+				"evidence": {"existing_morphology": {"frozen": True}},
+			}
+		else:
+			result = agent.translate_frozen(forward_item, job, segmented, annotation)
+	else:
+		progress("  morph: analyze")
+		morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
+		result = agent.annotate(forward_item, job, morph)
+
+	usage = tracker.summary()
+	return {
+		"segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""),
+		"translation": result.get("trsl_ai", ""), "decision": result.get("decision"),
+		"confidence": result.get("confidence"), "evidence": result.get("evidence", {}),
+		"api_usage": usage, "estimated_cost_usd": _usage_cost(usage), "model": model_name,
+	}
+
+
+def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialects=None,
+	id_model=None, surface_model=None, openai_client=None):
+	bundle = nrdb.workflow_job_items(job_id)
+	job = bundle["job"]
+	items = list(bundle.get("items", []))
+	if max_items is not None:
+		items = items[:max(0, int(max_items))]
+	nrdb.exclude_job_id = int(job_id)
+	nrdb.set_job_status(job_id, "running")
+	completed = 0
+	cost = 0.0
+	try:
+		for index, raw in enumerate(items, start=1):
+			progress("[{}/{}] sentence {}".format(index, len(items), raw["sentence_id"]))
+			item = dict(raw)
+			result = execute_item(
+				nrdb, item, job["task"], job["annotation_schema_id"], item.get("dialect_region"),
+				model_name=job["model_name"], translation_evidence=job.get("translation_evidence") or "ignore",
+				morphology_source=job.get("morphology_source") or "predict",
+				target_dialect_ids=target_dialects, id_model=id_model, surface_model=surface_model,
+				openai_client=openai_client, progress=progress,
+			)
+			cost += float(result.get("estimated_cost_usd") or 0.0)
+			evidence = dict(result.get("evidence") or {})
+			evidence["api_usage"] = result.get("api_usage", {})
+			nrdb.save_result(
+				job_id=job_id, sentence_id=item["sentence_id"], segmented=result.get("segmented", ""),
+				annotation=result.get("annotation", ""),
+				trsl_ai=result.get("translation", "") if job.get("produce_translation") else "",
+				decision=result.get("decision") or "proposed", confidence=result.get("confidence"),
+				evidence=evidence, model_response_id=None,
+			)
+			completed += 1
+		if max_items is None or completed >= len(bundle.get("items", [])):
+			nrdb.set_job_status(job_id, "completed")
+		summary = nrdb.summary(job_id)
+		if isinstance(summary, dict):
+			summary["workflow"] = {"task": job["task"], "completed": completed, "estimated_cost_usd": cost}
+		return summary
+	except BaseException as error:
+		nrdb.set_job_status(job_id, "failed", str(error))
+		raise
