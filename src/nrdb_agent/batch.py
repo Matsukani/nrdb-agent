@@ -5,6 +5,11 @@ from .dataset_io import item_matches_needs, load_dataset, output_row, write_json
 from .workflow import execute_item
 
 
+def _pricing_complete(result):
+	usage = result.get("api_usage") if isinstance(result, dict) else None
+	return bool(isinstance(usage, dict) and usage.get("pricing_complete"))
+
+
 def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None,
 	annotation_schema_id=None, region=None, default_dialect_id=None,
 	translation_evidence="ignore", morphology_source="predict", needs="any",
@@ -21,17 +26,22 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 	completed = 0
 	failed = 0
 	cost = 0.0
+	pricing_complete = True
 	for index, source_item in enumerate(selected, start=1):
-		progress("[{}/{}] {}".format(index, len(selected), source_item.get("example_id") or source_item.get("row_id")))
+		label = str(source_item.get("example_id") or source_item.get("row_id"))
+		if hasattr(progress, "item_start"):
+			progress.item_start(index, len(selected), label)
+		else:
+			progress("[{}/{}] {}".format(index, len(selected), label))
 		item = dict(source_item)
 		if item.get("source_status") == "invalid":
 			if morphology_source == "existing":
 				error = item.get("source_validation_error") or "input morphology is invalid"
 				rows.append(output_row(item, error=error))
 				failed += 1
+				if hasattr(progress, "item_error"):
+					progress.item_error(index, len(selected), error, label)
 				continue
-			# Invalid prior morphology is not authoritative in predict/auto modes.
-			# Treat it as absent so a clean analysis can replace it.
 			item["existing_segmented"] = ""
 			item["existing_annotation"] = ""
 		try:
@@ -43,11 +53,17 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 			)
 			rows.append(output_row(source_item, result=result))
 			cost += float(result.get("estimated_cost_usd") or 0.0)
+			pricing_complete = pricing_complete and _pricing_complete(result)
 			completed += 1
+			if hasattr(progress, "item_result"):
+				progress.item_result(index, len(selected), task, result, label)
 		except Exception as error:
 			rows.append(output_row(source_item, error=error))
 			failed += 1
-			progress("  failed: {}".format(error))
+			if hasattr(progress, "item_error"):
+				progress.item_error(index, len(selected), error, label)
+			else:
+				progress("  failed: {}".format(error))
 
 	payload = {
 		"format": "nrdb-agent.batch-result.v1",
@@ -57,7 +73,7 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 		"translation_evidence": translation_evidence, "morphology_source": morphology_source,
 		"needs": needs, "model": model_name,
 		"counts": {"input": len(bundle["items"]), "selected": len(selected), "completed": completed, "failed": failed},
-		"estimated_cost_usd": cost, "rows": rows,
+		"estimated_cost_usd": cost, "pricing_complete": pricing_complete, "rows": rows,
 	}
 	if output:
 		suffix = Path(output).suffix.lower()
@@ -65,6 +81,8 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 			write_json(output, payload)
 		else:
 			write_tsv(output, rows)
+	if hasattr(progress, "job_summary"):
+		progress.job_summary(completed, len(selected), cost, failed=failed, pricing_complete=pricing_complete)
 	return payload
 
 
@@ -72,14 +90,17 @@ def export_job_results_tsv(nrdb, job_id, output):
 	payload = nrdb.job_results(job_id)
 	rows = []
 	for value in payload.get("results", []):
+		usage = (value.get("evidence") or {}).get("api_usage") or {}
+		cost = (usage.get("totals") or {}).get("estimated_cost_usd")
 		rows.append({
 			"sentence_id": value.get("sentence_id"), "example_id": value.get("example_id"),
 			"source_text": value.get("source_text"), "human_translation_jp": value.get("translation_jp"),
 			"ai_segmented": value.get("ai_segmented"), "ai_annotation": value.get("ai_annotation"),
-			"ai_translation": value.get("trsl_ai"), "decision": value.get("decision"),
-			"confidence": value.get("confidence"), "gold_segmented": value.get("gold_segmented"),
-			"gold_annotation": value.get("gold_annotation"), "gold_translation_jp": value.get("gold_translation_jp"),
-			"exact_match": value.get("exact_match"), "evidence_json": json.dumps(value.get("evidence") or value.get("evidence_json") or {}, ensure_ascii=False, separators=(",", ":")),
+			"ai_translation": value.get("trsl_ai"), "ai_cost_usd": cost if cost is not None else "",
+			"decision": value.get("decision"), "confidence": value.get("confidence"),
+			"gold_segmented": value.get("gold_segmented"), "gold_annotation": value.get("gold_annotation"),
+			"gold_translation_jp": value.get("gold_translation_jp"), "exact_match": value.get("exact_match"),
+			"evidence_json": json.dumps(value.get("evidence") or value.get("evidence_json") or {}, ensure_ascii=False, separators=(",", ":")),
 		})
 	write_tsv(output, rows)
 	return {"output": str(output), "rows": len(rows), "job_id": int(job_id)}
