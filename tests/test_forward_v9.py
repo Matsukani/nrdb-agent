@@ -22,10 +22,30 @@ class FakeIdModel:
 		}
 
 
+class FakeNrdb:
+	def __init__(self):
+		self.form_calls = []
+		self.lookup_calls = []
+
+	def form_id_support(self, surface, candidate, region, schema_id):
+		self.form_calls.append((surface, candidate, region, schema_id))
+		return {
+			"surface": surface, "candidate_id": candidate, "region": region,
+			"combined": {"surface_total": 10, "candidate_count": 8, "candidate_rate": 0.8, "penalty": "none"},
+			"corpus": {"surface_total": 10, "candidate_count": 8, "alternatives": []},
+			"lexicon": {"surface_total": 0, "candidate_count": 0, "alternatives": []},
+		}
+
+	def lookup_id(self, label, schema_id):
+		self.lookup_calls.append((label, schema_id))
+		return {"label": label, "lexical_entries": [{"form1": "x", "meaning_jp": "X"}], "local": None, "global": None}
+
+
 def _agent():
 	agent = AnnotationAgentV9.__new__(AnnotationAgentV9)
 	agent.id_critic = IdSequenceCritic(model=FakeIdModel())
 	agent.id_model_path = "id.json"
+	agent._shared_evidence = {"lookup": {}, "corpus": {}, "form": {}}
 	return agent
 
 
@@ -45,6 +65,23 @@ def test_forward_v9_builds_id_and_surface_hotspots():
 	assert "soba" not in context["uncertain_surfaces"]
 
 
+def test_forward_v9_missing_confidence_and_candidate_list_are_not_automatically_uncertain():
+	agent = _agent()
+	# Candidate existence/support is not a calibrated probability margin.
+	morph = {
+		"annotation": "東an-top:1 何処in-dat 有av-int:ba",
+		"phrases": [{"segments": [
+			{"surface": "aga", "label": "東an", "alternatives": [{"label": "東an", "support": 5}, {"label": "上av", "support": 4}]},
+			{"surface": "ndza", "label": "何処in", "alternatives": [{"label": "何処in", "support": 60}]},
+			{"surface": "arj", "label": "有av", "alternatives": [{"label": "有av", "support": 34}, {"label": "別av", "support": 12}]},
+		]}],
+	}
+	context = agent._prepare_hotspots(morph, 2)
+	assert "aga" not in context["uncertain_surfaces"]
+	assert "ndza" not in context["uncertain_surfaces"]
+	assert "arj" not in context["uncertain_surfaces"]
+
+
 def test_forward_v9_suppresses_routine_queries_but_allows_hotspots():
 	agent = _agent()
 	agent._forward_hotspots = {
@@ -57,9 +94,41 @@ def test_forward_v9_suppresses_routine_queries_but_allows_hotspots():
 	allowed, reason = agent._query_is_hotspot("corpus_examples", {"label": "蕎麦sn-acc"})
 	assert allowed is False
 	assert "routine grammar" in reason
-	allowed, _ = agent._query_is_hotspot("form_id_support", {"surface": "fo", "candidate_id": "食kv"})
+	allowed, _ = agent._query_is_hotspot("form_id_support_batch", {"items": [{"surface": "fo", "candidate_ids": ["食kv", "別kv"]}]})
 	assert allowed is True
-	allowed, _ = agent._query_is_hotspot("form_id_support", {"surface": "soba", "candidate_id": "蕎麦sn"})
+	allowed, _ = agent._query_is_hotspot("form_id_support_batch", {"items": [{"surface": "soba", "candidate_ids": ["蕎麦sn"]}]})
 	assert allowed is False
-	allowed, _ = agent._query_is_hotspot("form_id_support", {"surface": "soba", "candidate_id": "別sn"})
+	allowed, _ = agent._query_is_hotspot("form_id_support_batch", {"items": [{"surface": "soba", "candidate_ids": ["別sn"]}]})
 	assert allowed is True
+
+
+def test_forward_v9_batches_multiple_form_pairs_into_one_tool_result():
+	agent = _agent()
+	agent.nrdb = FakeNrdb()
+	agent._forward_hotspots = {
+		"hotspot_ids": [],
+		"uncertain_surfaces": ["aga", "ga"],
+		"surface_labels": {"aga": ["東an"], "ga": ["itf:ga"]},
+	}
+	result = agent._tool_result_v9(
+		"form_id_support_batch",
+		{"items": [
+			{"surface": "aga", "candidate_ids": ["東an", "上av"]},
+			{"surface": "ga", "candidate_ids": ["itf:ga", "int:ga"]},
+		]},
+		{"dialect_region": "宮古"}, 2,
+	)
+	assert len(result["items"]) == 2
+	assert len(agent.nrdb.form_calls) == 4
+	assert set(agent._shared_evidence["form"]) == {"aga\t東an", "aga\t上av", "ga\titf:ga", "ga\tint:ga"}
+
+
+def test_forward_v9_reuses_cached_lexical_grounding():
+	agent = _agent()
+	agent.nrdb = FakeNrdb()
+	first = agent._ground_lexical_ids(["東an", "何処in"], 2)
+	second = agent._ground_lexical_ids(["東an", "何処in"], 2)
+	assert len(first["labels"]) == 2
+	assert len(second["labels"]) == 2
+	assert agent.nrdb.lookup_calls == [("東an", 2), ("何処in", 2)]
+	assert agent._review_cache_hit("ground_lexical_ids", {"labels": ["東an", "何処in"]}) is True
