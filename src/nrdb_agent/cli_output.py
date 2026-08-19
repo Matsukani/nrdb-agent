@@ -51,13 +51,18 @@ class MilestoneBar:
 		self._label = "starting"
 		self._seen = set()
 		self._glyphs = itertools.cycle("|/-\\")
-		self._last_length = 0
 
 	def start(self):
 		if self._thread is not None:
 			return
 		self._thread = threading.Thread(target=self._run, daemon=True)
 		self._thread.start()
+
+	def _clear_line(self):
+		# Return to column 0 and erase the complete terminal line before every
+		# redraw. Padding based on Python string length is unreliable for wide
+		# characters such as Japanese labels and can leave ghost fragments.
+		self.stream.write("\r\x1b[2K")
 
 	def _render(self, glyph=None, complete=False):
 		with self._lock:
@@ -69,10 +74,9 @@ class MilestoneBar:
 			remaining = max(0, self.width - completed - 1)
 			bar = "=" * completed + (glyph or "|") + "・" * remaining
 		text = bar + ("  " + label if self.show_label and label else "")
-		padding = " " * max(0, self._last_length - len(text))
-		self.stream.write("\r{}{}".format(text, padding))
+		self._clear_line()
+		self.stream.write(text)
 		self.stream.flush()
-		self._last_length = len(text)
 
 	def _run(self):
 		while not self._stop.is_set():
