@@ -4,6 +4,8 @@ import threading
 import time
 
 
+OUTPUT_MODES = {"quiet", "verbose", "silent", "compact"}
+
 QUIET_PREFIXES = (
 	"translate:",
 	"morph: model=",
@@ -33,9 +35,29 @@ MILESTONE_RULES = (
 	("reverse-v2: realize surface", "Miyako realization"),
 	("surface-model:", "surface critic"),
 	("review-v9: semantic consistency review", "semantic review"),
+	("review-v9: human translation consistency review", "semantic review"),
 	("review-v9: action=", "semantic review"),
 	("API usage:", "cost accounting"),
 )
+
+
+def add_output_mode_args(parser):
+	group = parser.add_mutually_exclusive_group()
+	group.add_argument("--quiet", action="store_true", help="Show major milestones and completed results; this is the default")
+	group.add_argument("--verbose", action="store_true", help="Show the full diagnostic/tool trace plus completed results")
+	group.add_argument("--silent", action="store_true", help="Show an unlabeled milestone bar plus completed results")
+	group.add_argument("--compact", action="store_true", help="Show a labeled milestone bar plus completed results")
+	return group
+
+
+def output_mode_from_args(args):
+	if getattr(args, "verbose", False):
+		return "verbose"
+	if getattr(args, "silent", False):
+		return "silent"
+	if getattr(args, "compact", False):
+		return "compact"
+	return "quiet"
 
 
 class MilestoneBar:
@@ -55,13 +77,11 @@ class MilestoneBar:
 	def start(self):
 		if self._thread is not None:
 			return
+		self._stop = threading.Event()
 		self._thread = threading.Thread(target=self._run, daemon=True)
 		self._thread.start()
 
 	def _clear_line(self):
-		# Return to column 0 and erase the complete terminal line before every
-		# redraw. Padding based on Python string length is unreliable for wide
-		# characters such as Japanese labels and can leave ghost fragments.
 		self.stream.write("\r\x1b[2K")
 
 	def _render(self, glyph=None, complete=False):
@@ -102,15 +122,17 @@ class MilestoneBar:
 				self._completed = self.width
 				self._label = "complete"
 			self._render(complete=True)
-		self.stream.write("\n")
+		else:
+			self._clear_line()
+		self.stream.write("\n" if complete else "")
 		self.stream.flush()
 		self._thread = None
 
 
 class TranslationProgress:
 	def __init__(self, mode="quiet", stream=None, progress_stream=None):
-		if mode not in {"quiet", "verbose", "silent", "compact"}:
-			raise ValueError("invalid translation output mode: {}".format(mode))
+		if mode not in OUTPUT_MODES:
+			raise ValueError("invalid output mode: {}".format(mode))
 		self.mode = mode
 		self.stream = stream or sys.stdout
 		self.progress_stream = progress_stream or sys.stderr
@@ -146,15 +168,76 @@ class TranslationProgress:
 			print(text, file=self.stream)
 
 
+class WorkflowProgress(TranslationProgress):
+	"""Shared presentation policy for translate, run, and process commands."""
+	def __init__(self, mode="quiet", stream=None, progress_stream=None):
+		super().__init__(mode=mode, stream=stream, progress_stream=progress_stream)
+		self.current_index = None
+		self.current_total = None
+		self.current_label = None
+
+	def item_start(self, index, total, label=None):
+		self.current_index = int(index)
+		self.current_total = int(total)
+		self.current_label = str(label or "")
+		if self.bar is not None:
+			self.bar = MilestoneBar(self.progress_stream, show_label=(self.mode == "compact"))
+			self.bar.start()
+		elif self.mode == "verbose":
+			print("[{}/{}] {}".format(index, total, self.current_label), file=self.stream)
+
+	def item_result(self, index, total, task, result, label=None):
+		if self.bar is not None:
+			self.bar.stop()
+			self.bar = None
+		prefix = "[{}/{}]".format(index, total)
+		value = _result_text(task, result)
+		cost = estimated_cost_text(result)
+		print("{} {} ({})".format(prefix, value, cost), file=self.stream)
+		self.stream.flush()
+
+	def item_error(self, index, total, error, label=None):
+		if self.bar is not None:
+			self.bar.stop(complete=False)
+			self.bar = None
+		print("[{}/{}] FAILED: {}".format(index, total, error), file=self.stream)
+		self.stream.flush()
+
+	def job_summary(self, completed, total, estimated_cost_usd, failed=0, pricing_complete=True):
+		cost = "${:.4f}".format(float(estimated_cost_usd)) if pricing_complete else "cost unknown"
+		print("{}/{} completed | failed={} | estimated total {}".format(completed, total, failed, cost), file=self.stream)
+		self.stream.flush()
+
+	def stop(self):
+		if self.bar is not None:
+			self.bar.stop(complete=False)
+			self.bar = None
+
+
+def _result_text(task, value):
+	task = str(task or "")
+	translation = str(value.get("translation") or "").strip()
+	if task in {"translate", "morph-translate", "reverse"} and translation:
+		return translation
+	segmented = str(value.get("segmented") or "").strip()
+	annotation = str(value.get("annotation") or "").strip()
+	if segmented and annotation:
+		return "{} | {}".format(segmented, annotation)
+	return annotation or segmented or "(no output)"
+
+
 def estimated_cost_text(value):
 	usage = value.get("api_usage") if isinstance(value, dict) else None
-	if not isinstance(usage, dict) or not usage.get("pricing_complete"):
-		return "cost unknown"
-	totals = usage.get("totals") or {}
-	cost = totals.get("estimated_cost_usd")
-	if cost is None:
-		return "cost unknown"
-	return "${:.4f}".format(float(cost))
+	if isinstance(usage, dict):
+		if not usage.get("pricing_complete"):
+			return "cost unknown"
+		totals = usage.get("totals") or {}
+		cost = totals.get("estimated_cost_usd")
+		if cost is not None:
+			return "${:.4f}".format(float(cost))
+	if isinstance(value, dict) and value.get("estimated_cost_usd") is not None:
+		return "${:.4f}".format(float(value.get("estimated_cost_usd") or 0.0))
+	return "cost unknown"
 
 
 def silent_translation_line(value):
