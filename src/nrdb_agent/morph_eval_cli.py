@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 
-from .morph_eval import evaluate_morph_agent
+from .morph_eval_resumable import evaluate_morph_agent_resumable
 from .nrdb import NrdbClient
 
 
@@ -100,6 +100,7 @@ def _print_summary(payload):
 	cost_text = "unknown" if not summary.get("pricing_complete") else "${:.4f}".format(float(cost or 0.0))
 	print()
 	print("  estimated agent cost:       {}".format(cost_text))
+	print("  durable checkpoint:         {} ({} rows)".format(summary.get("checkpoint") or "", summary.get("checkpointed_rows", 0)))
 
 
 def main(argv=None):
@@ -111,7 +112,9 @@ def main(argv=None):
 	parser.add_argument("--seed", type=int, default=1, help="deterministic cohort shuffle seed")
 	parser.add_argument("--expected-morph-model", default=None, help="fail if /analyze reports a different deployed morph model ID")
 	parser.add_argument("--id-model", default=None, help="ID-sequence critic; defaults to NRDB_ID_MODEL")
-	parser.add_argument("--output", default=None, help="write per-row .tsv or complete .json")
+	parser.add_argument("--output", default=None, help="write per-row .tsv or complete .json; also defines default checkpoint path")
+	parser.add_argument("--checkpoint", default=None, help="durable JSONL checkpoint path; defaults to OUTPUT.checkpoint.jsonl")
+	parser.add_argument("--resume", action="store_true", help="resume the exact same cohort from an existing durable checkpoint")
 	parser.add_argument("--json", action="store_true", help="print complete JSON instead of human summary")
 	parser.add_argument("--quiet", action="store_true", help="suppress per-row progress")
 	parser.add_argument("--agent-url", default=None)
@@ -121,11 +124,11 @@ def main(argv=None):
 		parser.error("--limit must be positive")
 	progress = (lambda _message: None) if args.quiet or args.json else print
 	nrdb = NrdbClient(args.agent_url, args.morph_url)
-	value = evaluate_morph_agent(
+	value = evaluate_morph_agent_resumable(
 		nrdb, args.morph_run, model_name=args.model, limit=args.limit, seed=args.seed,
 		dataset_ids=args.dataset_ids, expected_morph_model=args.expected_morph_model,
 		id_model=args.id_model or os.environ.get("NRDB_ID_MODEL"), output=args.output,
-		progress=progress,
+		checkpoint=args.checkpoint, resume=args.resume, progress=progress,
 	)
 	if args.json:
 		print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
