@@ -177,6 +177,7 @@ def evaluate_morph_agent(nrdb, run_dir, model_name="gpt-5.6", limit=None, seed=1
 			continue
 		eligible.append(row)
 
+	eligible_pool_size = len(eligible)
 	rng = random.Random(int(seed))
 	rng.shuffle(eligible)
 	if limit is not None:
@@ -236,7 +237,8 @@ def evaluate_morph_agent(nrdb, run_dir, model_name="gpt-5.6", limit=None, seed=1
 		"train_rows_missing_identity": contract["train_rows_missing_identity"],
 		"datasets": sorted(selected_dataset_ids),
 		"registered_gold_rows": len(registered),
-		"eligible_after_train_exclusion": len(eligible),
+		"eligible_pool_after_train_exclusion": eligible_pool_size,
+		"sampled_rows": len(eligible),
 		"registered_rows_without_example_id": unmatched_identity,
 		"selection_seed": int(seed),
 		"morph_model_ids": sorted(morph_model_ids),
