@@ -1,6 +1,8 @@
 import json
 import os
 
+from openai import OpenAI
+
 from .annotator import AnnotationAgent
 from .annotator_v7 import AnnotationAgentV7
 from .annotator_v8 import AnnotationAgentV8
@@ -9,6 +11,7 @@ from .reverse_agent import ReverseIdAgent
 from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
+from .usage import UsageTracker, tracked_client
 
 
 AGENT_JSON_ATTEMPTS = 3
@@ -25,6 +28,16 @@ def _trace_morph_inference(progress, morph):
 			inference.get("segmentation_top_k", ""), inference.get("segmentation_id_weight", ""),
 		)
 	)
+
+
+def _trace_usage(progress, usage, prefix="API usage"):
+	totals = usage.get("totals", {})
+	cost = totals.get("estimated_cost_usd")
+	cost_text = "unknown" if not usage.get("pricing_complete") else "${:.4f}".format(float(cost or 0.0))
+	progress("  {}: requests={} input={} cached={} output={} estimated_cost={}".format(
+		prefix, totals.get("requests", 0), totals.get("input_tokens", 0), totals.get("cached_input_tokens", 0),
+		totals.get("output_tokens", 0), cost_text,
+	))
 
 
 def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, target_dialects=None, surface_model=None, id_model=None):
@@ -55,7 +68,11 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 		agent_class = AnnotationAgentV7
 	else:
 		agent_class = AnnotationAgent
-	agent_kwargs = {"client": openai_client, "progress": progress}
+
+	usage_tracker = UsageTracker()
+	base_client = openai_client or OpenAI()
+	client = tracked_client(base_client, usage_tracker)
+	agent_kwargs = {"client": client, "progress": progress}
 	if agent_class is SurfaceCriticReverseAgent:
 		agent_kwargs["surface_model_path"] = surface_model
 		agent_kwargs["id_model_path"] = id_model
@@ -69,6 +86,7 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 	try:
 		for index, item in enumerate(items, start=1):
 			progress("[{}/{}] sentence {}".format(index, len(items), item["sentence_id"]))
+			usage_start = usage_tracker.snapshot()
 			try:
 				if prompt_version == "reverse-v1":
 					progress("  reverse-v1: Japanese={!r}".format(item.get("translation_jp") or ""))
@@ -98,6 +116,9 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 				progress("  infrastructure failure: {}".format(error))
 				raise
 
+			sentence_usage = usage_tracker.summary(since=usage_start)
+			result.setdefault("evidence", {})["api_usage"] = sentence_usage
+			_trace_usage(progress, sentence_usage)
 			progress("  save: AI result")
 			nrdb.save_result(
 				job_id=job_id,
@@ -118,9 +139,14 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 				progress("  translation: {!r}".format(result.get("trsl_ai", "")))
 			progress("  done")
 			completed += 1
+		job_usage = usage_tracker.summary()
+		_trace_usage(progress, job_usage, prefix="job API usage")
 		if max_items is None or completed >= len(bundle["items"]):
 			nrdb.set_job_status(job_id, "completed")
-		return nrdb.summary(job_id)
+		summary = nrdb.summary(job_id)
+		if isinstance(summary, dict):
+			summary["api_usage"] = job_usage
+		return summary
 	except BaseException as error:
 		nrdb.set_job_status(job_id, "failed", str(error))
 		raise
