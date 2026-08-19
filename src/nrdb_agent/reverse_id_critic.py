@@ -1,5 +1,6 @@
 import json
 
+from .annotator import _compact_tool_result, _response_output_as_input
 from .reverse_agent import ReverseIdAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
 
@@ -20,11 +21,35 @@ ID_REVIEW_FORMAT = {
 	},
 }
 
+ID_REVIEW_CORPUS_TOOL = {
+	"type": "function",
+	"name": "corpus_examples",
+	"description": "Retrieve human-validated corpus examples for ONE SHORT ID construction directly surrounding a statistical grammar surprise. Do not query unrelated or routine grammar.",
+	"parameters": {
+		"type": "object",
+		"properties": {
+			"label": {"type": "string", "maxLength": 256},
+			"limit": {"type": "integer", "minimum": 1, "maximum": 6},
+		},
+		"required": ["label", "limit"],
+		"additionalProperties": False,
+	},
+	"strict": True,
+}
+
 ID_REVIEW_INSTRUCTIONS = """You are the grammatical ID-sequence reviewer for NRDB Japanese-to-Miyako translation.
 
-You receive a Japanese sentence, an already proposed Miyako NRDB annotation, its original lexical/corpus evidence, and a SOFT statistical ID-sequence review trained on human Miyako annotation.
+You receive a Japanese sentence, an already proposed Miyako NRDB annotation, its lexical evidence, and a SOFT statistical ID-sequence review trained on human Miyako annotation.
 
 Goal: make at most a narrow grammatical revision when the statistical evidence exposes a genuinely implausible Miyako ID sequence.
+
+Query-efficiency rules:
+- The initial reverse planner has deliberately NOT spent corpus queries on routine grammar.
+- corpus_examples is available here only because the statistical critic has already found a strong surprise.
+- Query only a SHORT construction immediately around a surprising token when corpus evidence could distinguish competing grammatical analyses.
+- Do not query every surprising atom separately if one construction query can resolve several of them.
+- Do not use corpus_examples for lexical discovery or for grammar that the critic does not flag.
+- At most two hotspot corpus calls are available; often zero or one is enough.
 
 Rules:
 - The statistical critic is evidence, not truth. Rare but valid constructions must survive.
@@ -62,11 +87,7 @@ def _alternative_rows(position):
 	rows = []
 	for value in values[:5]:
 		if isinstance(value, dict):
-			rows.append({
-				"token": value.get("token"),
-				"probability": value.get("probability"),
-				"count": value.get("count"),
-			})
+			rows.append({"token": value.get("token"), "probability": value.get("probability"), "count": value.get("count")})
 		elif isinstance(value, (list, tuple)) and len(value) >= 2:
 			rows.append({"token": value[0], "probability": value[1], "count": None})
 	return rows
@@ -90,11 +111,7 @@ class IdSequenceCritic:
 	def compact(self, review):
 		strong = review.get("strong_surprises", [])
 		strong = strong if isinstance(strong, list) else []
-		out = {
-			"mean_log_probability": _combined_mean_log_probability(review),
-			"strong_surprises": _surprise_count(review),
-			"representations": {},
-		}
+		out = {"mean_log_probability": _combined_mean_log_probability(review), "strong_surprises": _surprise_count(review), "representations": {}}
 		for name in ("segment", "atom"):
 			value = review.get(name, {})
 			positions = []
@@ -102,27 +119,65 @@ class IdSequenceCritic:
 				if position.get("representation") != name:
 					continue
 				positions.append({
-					"index": position.get("index"),
-					"token": position.get("token"),
-					"context": position.get("context"),
-					"order": position.get("order"),
-					"log_probability": position.get("log_probability"),
-					"threshold": position.get("threshold"),
-					"top_observed": _alternative_rows(position),
+					"index": position.get("index"), "token": position.get("token"), "context": position.get("context"),
+					"order": position.get("order"), "log_probability": position.get("log_probability"),
+					"threshold": position.get("threshold"), "top_observed": _alternative_rows(position),
 				})
 			out["representations"][name] = {
 				"mean_log_probability": value.get("mean_log_probability"),
-				"strong_surprises": len(positions),
-				"surprising_positions": positions[:8],
+				"strong_surprises": len(positions), "surprising_positions": positions[:8],
 			}
 		return out
 
 
 class IdCriticSyntaxAwareReverseSurfaceAgent(SyntaxAwareReverseSurfaceAgent):
-	def __init__(self, *args, id_model_path=None, **kwargs):
+	def __init__(self, *args, id_model_path=None, max_id_review_evidence_calls=2, **kwargs):
 		super().__init__(*args, **kwargs)
 		self.id_critic = IdSequenceCritic(id_model_path) if id_model_path else None
 		self.id_model_path = str(id_model_path) if id_model_path else None
+		self.max_id_review_evidence_calls = int(max_id_review_evidence_calls)
+
+	def _review_candidate(self, item, job, payload):
+		base_input = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
+		evidence = []
+		evidence_calls = 0
+		response = self._create_response(
+			base_input, ID_REVIEW_INSTRUCTIONS, tools=[ID_REVIEW_CORPUS_TOOL], max_output_tokens=900, text_format=ID_REVIEW_FORMAT,
+		)
+		for round_index in range(1, 4):
+			calls = [value for value in getattr(response, "output", []) if getattr(value, "type", None) == "function_call"]
+			if not calls:
+				return json.loads((response.output_text or "").strip()), evidence
+			continuation = list(base_input)
+			if evidence:
+				continuation.append({"role": "user", "content": "Previously retrieved grammar-hotspot evidence:\n" + json.dumps(evidence, ensure_ascii=False)})
+			continuation.extend(_response_output_as_input(response))
+			self.progress("  id-model hotspot round {}: {} corpus call(s)".format(round_index, len(calls)))
+			for call in calls:
+				arguments = json.loads(call.arguments)
+				if call.name != "corpus_examples":
+					raise ValueError("unsupported ID-review tool: {}".format(call.name))
+				if evidence_calls >= self.max_id_review_evidence_calls:
+					compact = {"budget_exhausted": True, "message": "Grammar-hotspot corpus budget exhausted; revise conservatively from existing evidence."}
+				else:
+					result = self.nrdb.examples(
+						arguments["label"], int(job["annotation_schema_id"]), int(item.get("sentence_id") or 0), min(6, int(arguments["limit"])),
+					)
+					compact = _compact_tool_result("corpus_examples", result)
+					evidence_calls += 1
+					evidence.append({"label": arguments["label"], "result": compact})
+				continuation.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(compact, ensure_ascii=False)})
+			response = self._create_response(
+				continuation, ID_REVIEW_INSTRUCTIONS,
+				tools=[] if evidence_calls >= self.max_id_review_evidence_calls else [ID_REVIEW_CORPUS_TOOL],
+				max_output_tokens=900, text_format=ID_REVIEW_FORMAT,
+			)
+		# Hard-stop finalization without additional queries.
+		response = self._create_response(
+			base_input + [{"role": "user", "content": "Grammar-hotspot evidence gathering is finished. Return the conservative final ID revision now."}],
+			ID_REVIEW_INSTRUCTIONS, tools=[], max_output_tokens=900, text_format=ID_REVIEW_FORMAT,
+		)
+		return json.loads((response.output_text or "").strip()), evidence
 
 	def _review_ids(self, item, job, id_result):
 		if self.id_critic is None or not id_result.get("annotation"):
@@ -139,12 +194,11 @@ class IdCriticSyntaxAwareReverseSurfaceAgent(SyntaxAwareReverseSurfaceAgent):
 					"{}({:.4f})".format(entry.get("token"), float(entry.get("probability") or 0.0))
 					for entry in value.get("top_observed", [])[:3]
 				)
-				self.progress("    id-model: {} token={!r} after {} -> [{}]".format(
-					representation, value.get("token"), value.get("context"), top,
-				))
+				self.progress("    id-model: {} token={!r} after {} -> [{}]".format(representation, value.get("token"), value.get("context"), top))
 		id_result.setdefault("evidence", {})["id_sequence_review"] = compact
 		id_result["evidence"]["id_model_path"] = self.id_model_path
 		if initial_surprises == 0:
+			self.progress("  id-model: no grammar hotspot; zero corpus queries")
 			return id_result
 
 		payload = {
@@ -155,12 +209,10 @@ class IdCriticSyntaxAwareReverseSurfaceAgent(SyntaxAwareReverseSurfaceAgent):
 			"annotation_schema_id": int(job["annotation_schema_id"]),
 			"target_region": item.get("dialect_region"),
 		}
-		self.progress("  id-model: one soft grammatical revision pass")
-		response = self._create_response(
-			[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-			ID_REVIEW_INSTRUCTIONS, tools=[], max_output_tokens=900, text_format=ID_REVIEW_FORMAT,
-		)
-		candidate = json.loads((response.output_text or "").strip())
+		self.progress("  id-model: one soft grammatical revision pass; corpus only for flagged hotspots")
+		candidate, hotspot_evidence = self._review_candidate(item, job, payload)
+		if hotspot_evidence:
+			compact["hotspot_corpus_evidence"] = hotspot_evidence
 		candidate_annotation = str(candidate.get("annotation") or "").strip()
 		if not candidate_annotation or candidate_annotation == annotation:
 			compact["revision_attempted"] = True
@@ -169,17 +221,12 @@ class IdCriticSyntaxAwareReverseSurfaceAgent(SyntaxAwareReverseSurfaceAgent):
 		candidate_review = self.id_critic.review(candidate_annotation, int(job["annotation_schema_id"]))
 		candidate_surprises = _surprise_count(candidate_review)
 		candidate_mean = _combined_mean_log_probability(candidate_review)
-		accept = bool(
-			candidate_surprises < initial_surprises
-			or (candidate_surprises == initial_surprises and candidate_mean > initial_mean)
-		)
+		accept = bool(candidate_surprises < initial_surprises or (candidate_surprises == initial_surprises and candidate_mean > initial_mean))
 		compact["revision_attempted"] = True
 		compact["candidate"] = self.id_critic.compact(candidate_review)
 		compact["revision_accepted"] = accept
 		if accept:
-			self.progress("  id-model: revision accepted surprises {}->{} mean_logp {:.3f}->{:.3f}".format(
-				initial_surprises, candidate_surprises, initial_mean, candidate_mean,
-			))
+			self.progress("  id-model: revision accepted surprises {}->{} mean_logp {:.3f}->{:.3f}".format(initial_surprises, candidate_surprises, initial_mean, candidate_mean))
 			id_result["annotation"] = candidate_annotation
 			id_result["confidence"] = min(
 				float(id_result.get("confidence", 0.0)),
