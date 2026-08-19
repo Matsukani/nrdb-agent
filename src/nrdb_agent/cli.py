@@ -3,7 +3,13 @@ import json
 
 from .asr_review import review_asr_predictions
 from .batch import export_job_results_tsv, process_dataset
-from .cli_output import TranslationProgress, silent_translation_line
+from .cli_output import (
+	TranslationProgress,
+	WorkflowProgress,
+	add_output_mode_args,
+	output_mode_from_args,
+	silent_translation_line,
+)
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
 from .runner import run_job
@@ -179,6 +185,10 @@ def _show_with_linguistic_metrics(nrdb, job_id):
 	return summary
 
 
+def _explicit_output_mode(args):
+	return any(getattr(args, name, False) for name in ("quiet", "verbose", "silent", "compact"))
+
+
 def main():
 	parser = argparse.ArgumentParser(description="Run constrained NRDB AI morphology and translation workflows")
 	parser.add_argument("--agent-url", default=None)
@@ -196,7 +206,6 @@ def main():
 	create.add_argument("--limit", type=int, default=100)
 	create.add_argument("--seed", type=int, default=1)
 	create.add_argument("--model", default="gpt-5.6")
-	# Backward-compatible legacy job creation. Any of these flags switches create back to agent.php semantics.
 	create.add_argument("--mode", choices=["blind_gold", "unannotated"], default=None, help=argparse.SUPPRESS)
 	create.add_argument("--prompt-version", choices=["annotation-v1", "annotation-v2", "annotation-v3", "annotation-v4", "annotation-v5", "annotation-v6", "annotation-v7", "annotation-v8", "annotation-v9", "reverse-v1"], default=None, help=argparse.SUPPRESS)
 	create.add_argument("--translate", action="store_true", help=argparse.SUPPRESS)
@@ -210,6 +219,8 @@ def main():
 	run.add_argument("--target-dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...")
 	run.add_argument("--id-model", default=None, help="Optional nrdb-morph ID-sequence critic; also reads NRDB_ID_MODEL")
 	run.add_argument("--surface-model", default=None, help="Optional nrdb-morph surface critic; also reads NRDB_SURFACE_MODEL")
+	run.add_argument("--json", action="store_true", help="Suppress terminal progress and print the final job summary as JSON")
+	add_output_mode_args(run)
 
 	process = sub.add_parser("process", help="Process a portable _meta_/_cf_ XLSX or TSV dataset without registering it in NRDB")
 	process.add_argument("input")
@@ -227,7 +238,8 @@ def main():
 	process.add_argument("--surface-model", default=None)
 	process.add_argument("--limit", type=int, default=None)
 	process.add_argument("--output", default=None, help="Write .tsv (default by extension) or .json")
-	process.add_argument("--json", action="store_true", help="Print the complete batch result JSON")
+	process.add_argument("--json", action="store_true", help="Suppress terminal progress and print the complete batch result JSON")
+	add_output_mode_args(process)
 
 	translate = sub.add_parser("translate", help="Translate arbitrary Miyako or Japanese text without creating a job")
 	translate.add_argument("text")
@@ -238,11 +250,7 @@ def main():
 	translate.add_argument("--surface-model", default=None)
 	translate.add_argument("--model", default="gpt-5.6")
 	translate.add_argument("--json", action="store_true")
-	output_mode = translate.add_mutually_exclusive_group()
-	output_mode.add_argument("--quiet", action="store_true")
-	output_mode.add_argument("--verbose", action="store_true")
-	output_mode.add_argument("--silent", action="store_true")
-	output_mode.add_argument("--compact", action="store_true")
+	add_output_mode_args(translate)
 
 	asr_review = sub.add_parser("asr-review", help="Blindly rerank ASR n-best hypotheses with NRDB linguistic evidence")
 	asr_review.add_argument("predictions")
@@ -288,40 +296,54 @@ def main():
 	elif args.command == "list":
 		_print_json(nrdb.jobs())
 	elif args.command == "run":
+		if args.json and _explicit_output_mode(args):
+			parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
+		display = (lambda _message: None) if args.json else WorkflowProgress(output_mode_from_args(args))
 		try:
-			value = run_workflow_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, id_model=args.id_model, surface_model=args.surface_model)
-		except RuntimeError as error:
-			if "Legacy job" not in str(error):
-				raise
-			value = run_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, surface_model=args.surface_model, id_model=args.id_model)
-		_print_json(value)
-	elif args.command == "process":
-		value = process_dataset(
-			nrdb, args.input, args.task, model_name=args.model, component=args.component,
-			annotation_schema_id=args.annotation_schema_id, region=args.region, default_dialect_id=args.dialect_id,
-			translation_evidence=args.translation_evidence, morphology_source=args.morphology_source,
-			needs=args.needs, target_dialect_ids=args.dialects, id_model=args.id_model,
-			surface_model=args.surface_model, output=args.output, limit=args.limit,
-		)
+			try:
+				value = run_workflow_job(
+					nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects,
+					id_model=args.id_model, surface_model=args.surface_model, progress=display,
+				)
+			except RuntimeError as error:
+				if "Legacy job" not in str(error):
+					raise
+				value = run_job(
+					nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects,
+					surface_model=args.surface_model, id_model=args.id_model, progress=display,
+				)
+		finally:
+			if hasattr(display, "stop"):
+				display.stop()
 		if args.json:
 			_print_json(value)
-		else:
-			print("processed {completed}/{selected} rows; failed={failed}; estimated_cost=${cost:.4f}{output}".format(
-				completed=value["counts"]["completed"], selected=value["counts"]["selected"],
-				failed=value["counts"]["failed"], cost=float(value["estimated_cost_usd"]),
-				output="; output=" + str(args.output) if args.output else "",
-			))
+	elif args.command == "process":
+		if args.json and _explicit_output_mode(args):
+			parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
+		display = (lambda _message: None) if args.json else WorkflowProgress(output_mode_from_args(args))
+		try:
+			value = process_dataset(
+				nrdb, args.input, args.task, model_name=args.model, component=args.component,
+				annotation_schema_id=args.annotation_schema_id, region=args.region, default_dialect_id=args.dialect_id,
+				translation_evidence=args.translation_evidence, morphology_source=args.morphology_source,
+				needs=args.needs, target_dialect_ids=args.dialects, id_model=args.id_model,
+				surface_model=args.surface_model, output=args.output, limit=args.limit, progress=display,
+			)
+		finally:
+			if hasattr(display, "stop"):
+				display.stop()
+		if args.json:
+			_print_json(value)
 	elif args.command == "translate":
 		if args.target == "miyako" and not args.dialects:
 			parser.error("Japanese -> Miyako translation requires --dialects ID1,ID2,...")
-		explicit_output = args.quiet or args.verbose or args.silent or args.compact
-		if args.json and explicit_output:
+		if args.json and _explicit_output_mode(args):
 			parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
 		if args.json:
 			value = translate_text(nrdb, args.text, args.target, args.annotation_schema_id, args.region, dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model, progress=lambda _message: None)
 			_print_json(value)
 		else:
-			mode = "verbose" if args.verbose else "silent" if args.silent else "compact" if args.compact else "quiet"
+			mode = output_mode_from_args(args)
 			display = TranslationProgress(mode)
 			display.start()
 			try:
