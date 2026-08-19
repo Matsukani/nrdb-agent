@@ -1,8 +1,6 @@
 import json
 import os
 
-from openai import OpenAI
-
 from .annotator import AnnotationAgent
 from .annotator_v7 import AnnotationAgentV7
 from .annotator_v8 import AnnotationAgentV8
@@ -21,13 +19,10 @@ def _trace_morph_inference(progress, morph):
 	inference = morph.get("inference") if isinstance(morph, dict) else None
 	if not isinstance(inference, dict):
 		return
-	progress(
-		"  morph: model={} ({}) backend={} decoding={} top-k={} id-weight={}".format(
-			inference.get("model_id", ""), inference.get("model_label", ""),
-			inference.get("backend", ""), inference.get("segmentation_mode", ""),
-			inference.get("segmentation_top_k", ""), inference.get("segmentation_id_weight", ""),
-		)
-	)
+	progress("  morph: model={} ({}) backend={} decoding={} top-k={} id-weight={}".format(
+		inference.get("model_id", ""), inference.get("model_label", ""), inference.get("backend", ""),
+		inference.get("segmentation_mode", ""), inference.get("segmentation_top_k", ""), inference.get("segmentation_id_weight", ""),
+	))
 
 
 def _trace_usage(progress, usage, prefix="API usage"):
@@ -35,8 +30,7 @@ def _trace_usage(progress, usage, prefix="API usage"):
 	cost = totals.get("estimated_cost_usd")
 	cost_text = "unknown" if not usage.get("pricing_complete") else "${:.4f}".format(float(cost or 0.0))
 	progress("  {}: requests={} input={} cached={} output={} estimated_cost={}".format(
-		prefix, totals.get("requests", 0), totals.get("input_tokens", 0), totals.get("cached_input_tokens", 0),
-		totals.get("output_tokens", 0), cost_text,
+		prefix, totals.get("requests", 0), totals.get("input_tokens", 0), totals.get("cached_input_tokens", 0), totals.get("output_tokens", 0), cost_text,
 	))
 
 
@@ -70,8 +64,7 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 		agent_class = AnnotationAgent
 
 	usage_tracker = UsageTracker()
-	base_client = openai_client or OpenAI()
-	client = tracked_client(base_client, usage_tracker)
+	client = tracked_client(openai_client, usage_tracker)
 	agent_kwargs = {"client": client, "progress": progress}
 	if agent_class is SurfaceCriticReverseAgent:
 		agent_kwargs["surface_model_path"] = surface_model
@@ -121,15 +114,9 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 			_trace_usage(progress, sentence_usage)
 			progress("  save: AI result")
 			nrdb.save_result(
-				job_id=job_id,
-				sentence_id=item["sentence_id"],
-				segmented=result.get("segmented", ""),
-				annotation=result["annotation"],
-				trsl_ai=result.get("trsl_ai", "") if job.get("produce_translation") else "",
-				decision=result["decision"],
-				confidence=result["confidence"],
-				evidence=result["evidence"],
-				model_response_id=result.get("model_response_id"),
+				job_id=job_id, sentence_id=item["sentence_id"], segmented=result.get("segmented", ""), annotation=result["annotation"],
+				trsl_ai=result.get("trsl_ai", "") if job.get("produce_translation") else "", decision=result["decision"],
+				confidence=result["confidence"], evidence=result["evidence"], model_response_id=result.get("model_response_id"),
 			)
 			if prompt_version == "reverse-v1":
 				progress("  reverse IDs: {!r}".format(result.get("annotation", "")))
