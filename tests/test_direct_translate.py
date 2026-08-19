@@ -30,7 +30,7 @@ class FakeNrdb:
 
 
 class FakeForwardAgent:
-	def __init__(self, nrdb, model_name, client=None, progress=print, id_model_path=None, surface_model_path=None):
+	def __init__(self, nrdb, model_name, client=None, progress=print, id_model_path=None):
 		self.nrdb = nrdb
 
 	def annotate(self, item, job, morph):
@@ -69,7 +69,7 @@ class FakeReverseAgent:
 
 
 def test_direct_miyako_to_japanese_uses_region_dialect_morph_service_and_provenance(monkeypatch):
-	monkeypatch.setattr(translate_module, "ForwardCriticAnnotationAgent", FakeForwardAgent)
+	monkeypatch.setattr(translate_module, "AnnotationAgentV9", FakeForwardAgent)
 	nrdb = FakeNrdb()
 	messages = []
 	result = translate_module.translate_text(nrdb, "mija", "japanese", 2, "宮古", progress=messages.append)
@@ -83,7 +83,7 @@ def test_direct_miyako_to_japanese_uses_region_dialect_morph_service_and_provena
 
 def test_direct_translation_retries_malformed_tool_json(monkeypatch):
 	FlakyForwardAgent.attempts = 0
-	monkeypatch.setattr(translate_module, "ForwardCriticAnnotationAgent", FlakyForwardAgent)
+	monkeypatch.setattr(translate_module, "AnnotationAgentV9", FlakyForwardAgent)
 	nrdb = FakeNrdb()
 	messages = []
 	result = translate_module.translate_text(nrdb, "mija", "japanese", 2, "宮古", progress=messages.append)
