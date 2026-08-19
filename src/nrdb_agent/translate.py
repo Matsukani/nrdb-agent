@@ -1,7 +1,5 @@
 import os
 
-from openai import OpenAI
-
 from .annotator_v9 import AnnotationAgentV9
 from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
@@ -28,28 +26,20 @@ def _trace_morph_provenance(progress, morph):
 	if not inference:
 		progress("  morph: model provenance unavailable")
 		return
-	progress(
-		"  morph: model={} ({}) backend={} decoding={} top-k={} id-weight={}".format(
-			inference.get("model_id", ""),
-			inference.get("model_label", ""),
-			inference.get("backend", ""),
-			inference.get("segmentation_mode", ""),
-			inference.get("segmentation_top_k", ""),
-			inference.get("segmentation_id_weight", ""),
-		)
-	)
+	progress("  morph: model={} ({}) backend={} decoding={} top-k={} id-weight={}".format(
+		inference.get("model_id", ""), inference.get("model_label", ""), inference.get("backend", ""),
+		inference.get("segmentation_mode", ""), inference.get("segmentation_top_k", ""), inference.get("segmentation_id_weight", ""),
+	))
 
 
 def _trace_usage(progress, usage):
 	totals = usage.get("totals", {})
 	cost = totals.get("estimated_cost_usd")
 	cost_text = "unknown" if not usage.get("pricing_complete") else "${:.4f}".format(float(cost or 0.0))
-	progress(
-		"  API usage: requests={} input={} cached={} output={} reasoning={} estimated_cost={}".format(
-			totals.get("requests", 0), totals.get("input_tokens", 0), totals.get("cached_input_tokens", 0),
-			totals.get("output_tokens", 0), totals.get("reasoning_tokens", 0), cost_text,
-		)
-	)
+	progress("  API usage: requests={} input={} cached={} output={} reasoning={} estimated_cost={}".format(
+		totals.get("requests", 0), totals.get("input_tokens", 0), totals.get("cached_input_tokens", 0),
+		totals.get("output_tokens", 0), totals.get("reasoning_tokens", 0), cost_text,
+	))
 	for stage, values in usage.get("by_stage", {}).items():
 		progress("    cost {}: requests={} tokens={}+{} cost=${:.4f}".format(
 			stage, values.get("requests", 0), values.get("input_tokens", 0), values.get("output_tokens", 0),
@@ -75,8 +65,7 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	nrdb.exclude_job_id = 0
 	id_model = id_model or os.environ.get("NRDB_ID_MODEL")
 	usage_tracker = UsageTracker()
-	base_client = openai_client or OpenAI()
-	client = tracked_client(base_client, usage_tracker)
+	client = tracked_client(openai_client, usage_tracker)
 
 	if target == "japanese":
 		dialect_id = dialects[0]
@@ -87,42 +76,19 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 		progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
 		if id_model:
 			progress("  forward ID critic: {}".format(id_model))
-		item = {
-			"sentence_id": 0,
-			"dialect_id": dialect_id,
-			"dialect_region": region,
-			"text": text,
-			"translation_jp": None,
-		}
-		job = {
-			"annotation_schema_id": annotation_schema_id,
-			"model_name": model_name,
-			"prompt_version": "annotation-v9",
-			"produce_translation": True,
-			"blind_translation": False,
-		}
-		agent = AnnotationAgentV9(
-			nrdb, model_name, client=client, progress=progress,
-			id_model_path=id_model,
-		)
+		item = {"sentence_id": 0, "dialect_id": dialect_id, "dialect_region": region, "text": text, "translation_jp": None}
+		job = {"annotation_schema_id": annotation_schema_id, "model_name": model_name, "prompt_version": "annotation-v9", "produce_translation": True, "blind_translation": False}
+		agent = AnnotationAgentV9(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
 		result = agent.annotate(item, job, morph)
 		usage = usage_tracker.summary()
 		_trace_usage(progress, usage)
 		return {
-			"direction": "miyako_to_japanese",
-			"source": text,
-			"region": region,
-			"annotation_schema_id": annotation_schema_id,
-			"morph_dialect_id": dialect_id,
-			"morph_inference": _morph_provenance(morph),
-			"llm_model": model_name,
-			"segmented": result.get("segmented", ""),
-			"annotation": result.get("annotation", ""),
-			"translation": result.get("trsl_ai", ""),
-			"decision": result.get("decision"),
-			"confidence": result.get("confidence"),
-			"api_usage": usage,
-			"evidence": result.get("evidence", {}),
+			"direction": "miyako_to_japanese", "source": text, "region": region,
+			"annotation_schema_id": annotation_schema_id, "morph_dialect_id": dialect_id,
+			"morph_inference": _morph_provenance(morph), "llm_model": model_name,
+			"segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""),
+			"translation": result.get("trsl_ai", ""), "decision": result.get("decision"),
+			"confidence": result.get("confidence"), "api_usage": usage, "evidence": result.get("evidence", {}),
 		}
 
 	if not dialect_ids:
@@ -133,46 +99,21 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 		progress("  ID critic: {}".format(id_model))
 	if surface_model:
 		progress("  surface critic: {}".format(surface_model))
-	item = {
-		"sentence_id": 0,
-		"dialect_id": dialects[0],
-		"dialect_region": region,
-		"text": "",
-		"translation_jp": text,
-	}
-	job = {
-		"annotation_schema_id": annotation_schema_id,
-		"model_name": model_name,
-		"prompt_version": "reverse-v1",
-		"produce_translation": False,
-		"blind_translation": False,
-		"target_dialect_ids": dialects,
-	}
+	item = {"sentence_id": 0, "dialect_id": dialects[0], "dialect_region": region, "text": "", "translation_jp": text}
+	job = {"annotation_schema_id": annotation_schema_id, "model_name": model_name, "prompt_version": "reverse-v1", "produce_translation": False, "blind_translation": False, "target_dialect_ids": dialects}
 	if surface_model:
-		agent = SurfaceCriticReverseAgent(
-			nrdb, model_name, client=client, progress=progress,
-			surface_model_path=surface_model, id_model_path=id_model,
-		)
+		agent = SurfaceCriticReverseAgent(nrdb, model_name, client=client, progress=progress, surface_model_path=surface_model, id_model_path=id_model)
 	elif id_model:
-		agent = IdCriticSyntaxAwareReverseSurfaceAgent(
-			nrdb, model_name, client=client, progress=progress, id_model_path=id_model,
-		)
+		agent = IdCriticSyntaxAwareReverseSurfaceAgent(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
 	else:
 		agent = SyntaxAwareReverseSurfaceAgent(nrdb, model_name, client=client, progress=progress)
 	result = agent.annotate(item, job, None)
 	usage = usage_tracker.summary()
 	_trace_usage(progress, usage)
 	return {
-		"direction": "japanese_to_miyako",
-		"source": text,
-		"region": region,
-		"annotation_schema_id": annotation_schema_id,
-		"target_dialect_ids": dialects,
-		"llm_model": model_name,
-		"annotation": result.get("annotation", ""),
-		"translation": result.get("segmented", ""),
-		"decision": result.get("decision"),
-		"confidence": result.get("confidence"),
-		"api_usage": usage,
-		"evidence": result.get("evidence", {}),
+		"direction": "japanese_to_miyako", "source": text, "region": region,
+		"annotation_schema_id": annotation_schema_id, "target_dialect_ids": dialects, "llm_model": model_name,
+		"annotation": result.get("annotation", ""), "translation": result.get("segmented", ""),
+		"decision": result.get("decision"), "confidence": result.get("confidence"),
+		"api_usage": usage, "evidence": result.get("evidence", {}),
 	}
