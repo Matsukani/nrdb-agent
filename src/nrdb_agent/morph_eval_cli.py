@@ -29,6 +29,25 @@ def _pct(value):
 	return "n/a" if value is None else "{:.1f}%".format(100.0 * float(value))
 
 
+def _print_calibration_view(label, view):
+	agree = view["agreement"]
+	disagree = view["disagreement"]
+	print("  {} agreement:    {} rows | coverage {}".format(label, agree["rows"], _pct(agree["coverage"])))
+	print("    gold exact: baseline {} | agent {}".format(
+		_pct(agree["baseline"]["id_exact_accuracy"]), _pct(agree["agent"]["id_exact_accuracy"]),
+	))
+	print("    ID match:   baseline {} | agent {}".format(
+		_pct(agree["baseline"]["id_match_rate"]), _pct(agree["agent"]["id_match_rate"]),
+	))
+	print("  {} disagreement: {} rows | coverage {}".format(label, disagree["rows"], _pct(disagree["coverage"])))
+	print("    gold exact: baseline {} | agent {}".format(
+		_pct(disagree["baseline"]["id_exact_accuracy"]), _pct(disagree["agent"]["id_exact_accuracy"]),
+	))
+	print("    ID match:   baseline {} | agent {}".format(
+		_pct(disagree["baseline"]["id_match_rate"]), _pct(disagree["agent"]["id_match_rate"]),
+	))
+
+
 def _print_summary(payload):
 	summary = payload["summary"]
 	baseline = summary["baseline"]
@@ -53,8 +72,33 @@ def _print_summary(payload):
 	print("  baseline ID correct damaged:{} ({})".format(paired["baseline_id_correct_damaged"], _pct(paired["baseline_id_damage_rate"])))
 	print("  fewer / more ID edits:      {} / {}".format(paired["rows_with_fewer_id_edits"], paired["rows_with_more_id_edits"]))
 	print("  seg errors fixed / damaged: {} / {}".format(paired["baseline_seg_errors_corrected"], paired["baseline_seg_correct_damaged"]))
+	print()
+	print("AGREEMENT CALIBRATION")
+	calibration = summary["agreement_calibration"]
+	_print_calibration_view("ID", calibration["id"])
+	full = calibration["full_analysis"]
+	print("  full-analysis agreement:    {} rows | coverage {} | gold exact {}".format(
+		full["agreement"]["rows"], _pct(full["agreement"]["coverage"]),
+		_pct(full["agreement"]["baseline"]["full_analysis_exact_accuracy"]),
+	))
+	print("  full-analysis disagreement: {} rows | coverage {} | baseline/agent gold exact {} / {}".format(
+		full["disagreement"]["rows"], _pct(full["disagreement"]["coverage"]),
+		_pct(full["disagreement"]["baseline"]["full_analysis_exact_accuracy"]),
+		_pct(full["disagreement"]["agent"]["full_analysis_exact_accuracy"]),
+	))
+	seg = calibration["segmentation"]
+	print("  segmentation agreement:     {} rows | coverage {} | baseline gold exact {}".format(
+		seg["agreement"]["rows"], _pct(seg["agreement"]["coverage"]),
+		_pct(seg["agreement"]["baseline"]["segmentation_exact_accuracy"]),
+	))
+	print("  segmentation disagreement:  {} rows | coverage {} | baseline/agent gold exact {} / {}".format(
+		seg["disagreement"]["rows"], _pct(seg["disagreement"]["coverage"]),
+		_pct(seg["disagreement"]["baseline"]["segmentation_exact_accuracy"]),
+		_pct(seg["disagreement"]["agent"]["segmentation_exact_accuracy"]),
+	))
 	cost = summary.get("estimated_cost_usd")
 	cost_text = "unknown" if not summary.get("pricing_complete") else "${:.4f}".format(float(cost or 0.0))
+	print()
 	print("  estimated agent cost:       {}".format(cost_text))
 
 
