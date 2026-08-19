@@ -1,3 +1,5 @@
+import json
+
 from nrdb_agent import translate as translate_module
 
 
@@ -43,6 +45,16 @@ class FakeForwardAgent:
 		}
 
 
+class FlakyForwardAgent(FakeForwardAgent):
+	attempts = 0
+
+	def annotate(self, item, job, morph):
+		type(self).attempts += 1
+		if type(self).attempts == 1:
+			raise json.JSONDecodeError("Unterminated string", '{"surface":"aga', 12)
+		return super().annotate(item, job, morph)
+
+
 class FakeReverseAgent:
 	def __init__(self, nrdb, model_name, client=None, progress=print, surface_model_path=None, id_model_path=None):
 		assert surface_model_path == "/tmp/surface.json"
@@ -67,6 +79,17 @@ def test_direct_miyako_to_japanese_uses_region_dialect_morph_service_and_provena
 	assert result["morph_inference"]["model_id"] == "miyako-65k-hybrid-shared-v002"
 	assert any("miyako-65k-hybrid-shared-v002" in message and "top-k=5" in message for message in messages)
 	assert nrdb.exclude_job_id == 0
+
+
+def test_direct_translation_retries_malformed_tool_json(monkeypatch):
+	FlakyForwardAgent.attempts = 0
+	monkeypatch.setattr(translate_module, "AnnotationAgentV9", FlakyForwardAgent)
+	nrdb = FakeNrdb()
+	messages = []
+	result = translate_module.translate_text(nrdb, "mija", "japanese", 2, "宮古", progress=messages.append)
+	assert result["translation"] == "見るよ。"
+	assert FlakyForwardAgent.attempts == 2
+	assert any("malformed/truncated tool or final JSON" in message for message in messages)
 
 
 def test_direct_japanese_to_miyako_uses_ordered_dialects_and_surface_critic(monkeypatch):
