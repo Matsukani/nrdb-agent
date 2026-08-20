@@ -152,6 +152,7 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		result = agent.annotate(reverse_item, job, None)
 		usage = tracker.summary()
 		return {
+			"source": japanese,
 			"segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""),
 			"translation": result.get("segmented", ""), "decision": result.get("decision"),
 			"confidence": result.get("confidence"), "evidence": result.get("evidence", {}),
@@ -209,6 +210,7 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 
 	usage = tracker.summary()
 	return {
+		"source": text,
 		"segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""),
 		"translation": result.get("trsl_ai", ""), "decision": result.get("decision"),
 		"confidence": result.get("confidence"), "evidence": result.get("evidence", {}),
