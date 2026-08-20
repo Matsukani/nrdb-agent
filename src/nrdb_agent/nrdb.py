@@ -89,17 +89,22 @@ class NrdbClient:
 			raise RuntimeError(payload.get("error") or "NRDB agent results API failed")
 		return payload
 
-	def morph_eval_rows(self, dataset_ids, page_size=500):
+	def morph_eval_rows(self, dataset_ids, page_size=500, text_internal_id=None):
 		dataset_ids = sorted({int(value) for value in dataset_ids})
 		if not dataset_ids:
 			return []
+		if text_internal_id is not None and len(dataset_ids) != 1:
+			raise ValueError("text_internal_id requires exactly one dataset ID")
 		rows = []
 		after_id = 0
 		while True:
-			payload = self.http.get(self.morph_eval_url, {
+			params = {
 				"dataset_ids": ",".join(str(value) for value in dataset_ids),
 				"after_id": int(after_id), "limit": int(page_size),
-			})
+			}
+			if text_internal_id is not None:
+				params["text_internal_id"] = int(text_internal_id)
+			payload = self.http.get(self.morph_eval_url, params)
 			if not payload.get("success"):
 				raise RuntimeError(payload.get("error") or "NRDB morph evaluation API failed")
 			batch = payload.get("rows", [])
