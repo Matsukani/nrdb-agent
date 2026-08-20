@@ -12,9 +12,9 @@ def _pricing_complete(result):
 
 def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None,
 	annotation_schema_id=None, region=None, default_dialect_id=None,
-	translation_evidence="ignore", morphology_source="predict", needs="any",
+	semantic_feedback="none", require_semantic_feedback=False, morphology_source="predict", needs="any",
 	target_dialect_ids=None, id_model=None, surface_model=None, output=None, limit=None,
-	progress=print):
+	progress=print, translation_evidence=None):
 	bundle = load_dataset(
 		input_path, component=component, annotation_schema_id=annotation_schema_id,
 		region=region, default_dialect_id=default_dialect_id,
@@ -47,7 +47,9 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 		try:
 			result = execute_item(
 				nrdb, item, task, bundle["annotation_schema_id"], bundle["region"],
-				model_name=model_name, translation_evidence=translation_evidence,
+				model_name=model_name, semantic_feedback=semantic_feedback,
+				require_semantic_feedback=require_semantic_feedback,
+				translation_evidence=translation_evidence,
 				morphology_source=morphology_source, target_dialect_ids=target_dialect_ids,
 				id_model=id_model, surface_model=surface_model, progress=progress,
 			)
@@ -66,11 +68,12 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 				progress("  failed: {}".format(error))
 
 	payload = {
-		"format": "nrdb-agent.batch-result.v1",
+		"format": "nrdb-agent.batch-result.v2",
 		"source": str(input_path), "source_type": bundle["source_type"],
 		"dataset": bundle.get("dataset", {}), "component": bundle.get("component"),
 		"task": task, "annotation_schema_id": bundle["annotation_schema_id"], "region": bundle["region"],
-		"translation_evidence": translation_evidence, "morphology_source": morphology_source,
+		"semantic_feedback": semantic_feedback, "require_semantic_feedback": bool(require_semantic_feedback),
+		"morphology_source": morphology_source,
 		"needs": needs, "model": model_name,
 		"counts": {"input": len(bundle["items"]), "selected": len(selected), "completed": completed, "failed": failed},
 		"estimated_cost_usd": cost, "pricing_complete": pricing_complete, "rows": rows,
