@@ -1,42 +1,66 @@
 # Morphology and translation workflows
 
-`nrdb-agent` separates five concerns that were previously entangled in one annotation job:
+`nrdb-agent` separates the workflow into independent axes:
 
-1. **source**: registered NRDB dataset, portable `_meta_`/`_cf_` XLSX, or TSV;
-2. **task**: `morph`, `translate`, `morph-translate`, or `reverse`;
-3. **translation evidence** for morphology: `ignore`, `use`, or `required`;
+1. **source**: registered NRDB dataset, portable `_meta_`/`_cf_` XLSX, TSV, or direct one-line input;
+2. **task/output**: `morph`, `translate`, `morph-translate`, or `reverse`;
+3. **semantic feedback for morphology**: `none`, `generated`, `existing`, or `auto`;
 4. **morphology source**: `predict`, `existing`, or `auto`;
 5. **selection/output**: NRDB scope/missingness or local TSV/JSON output.
+
+The central rule is that **producing a Japanese translation and using Japanese as semantic feedback are different decisions**. A translation may be generated internally to review morphology without becoming an output, and a requested translation may be produced without reopening morphology.
+
+## Semantic feedback
+
+`--semantic-feedback` applies while predicted morphology is still reviewable:
+
+- `none`: morphology is reviewed only from nrdb-morph, NRDB lexical/corpus evidence, critics, and annotation constraints;
+- `generated`: generate a dictionary-grounded Japanese translation internally, then use it for a semantic consistency review of morphology;
+- `existing`: use the Japanese translation already present in the dataset as semantic evidence;
+- `auto`: use an existing translation when available, otherwise generate one internally.
+
+`--require-semantic-feedback` makes the selected source mandatory. It is most useful with `existing` when an experiment must contain only rows with human/gold Japanese translations.
+
+If generated semantic feedback revises morphology and Japanese translation is also a requested output, the final Japanese is regenerated from the revised morphology so annotation and translation cannot diverge.
 
 ## Task semantics
 
 ### `morph`
 
-Produce Miyako segmentation and morphemic annotation only.
+Produce Miyako segmentation and morphemic annotation only. Semantic feedback is independent:
 
-- `--translation-evidence ignore`: do not expose an existing Japanese translation.
-- `--translation-evidence use`: if a human Japanese translation exists, use it only in a final semantic consistency review of the proposed morphology.
-- `--translation-evidence required`: as above, but fail/skip rows without a human translation.
+```bash
+# A. Morph + NRDB/LLM evidence only
+nrdb-agent process data.xlsx --task morph --semantic-feedback none
 
-No Japanese translation is generated.
+# B. Morph + internally generated Japanese semantic feedback
+nrdb-agent process data.xlsx --task morph --semantic-feedback generated
+
+# C. Morph + existing data translation semantic feedback
+nrdb-agent process data.xlsx --task morph --semantic-feedback existing --require-semantic-feedback
+```
+
+In B, the generated Japanese is internal evidence and `ai_translation` remains empty because the requested task is morphology only.
 
 ### `translate`
 
 Produce Japanese from morphology.
 
-- `--morphology-source existing`: require existing segmentation + annotation, validate them, freeze them, skip nrdb-morph prediction, and run only dictionary-grounded Japanese translation.
-- `--morphology-source auto`: use existing morphology when present; otherwise predict it.
+- `--morphology-source existing`: require existing segmentation + annotation, validate them, freeze them, skip nrdb-morph prediction, and run only dictionary-grounded Japanese translation;
+- `--morphology-source auto`: use existing morphology when present; otherwise predict it;
 - `--morphology-source predict`: always infer morphology before translation.
 
-An existing human Japanese translation is never exposed to the Japanese generation phase, so translation-only evaluation does not leak the target.
+Semantic feedback remains independent. For example, `--task translate --morphology-source predict --semantic-feedback none` translates the final predicted morphology but does not use generated Japanese to revise it. `--semantic-feedback generated` performs the semantic review before producing the final translation.
+
+An existing human Japanese translation used as feedback is never exposed to the Japanese generation phase itself.
 
 ### `morph-translate`
 
-Infer/review morphology and then produce Japanese from the finalized morphology. With `--translation-evidence use|required`, a human translation constrains morphology before the generated Japanese phase.
+Produce both finalized morphology and Japanese. `--semantic-feedback none|generated|existing|auto` independently controls whether Japanese semantics may revise morphology.
 
 ### `reverse`
 
-Japanese -> Miyako IDs -> Miyako surface realization. `--dialects` / `--target-dialects` supplies ordered target-dialect preference. Existing `NRDB_ID_MODEL` and `NRDB_SURFACE_MODEL` critics remain available.
+Japanese -> Miyako IDs -> Miyako surface realization. Semantic feedback is not applicable. `--dialects` / `--target-dialects` supplies ordered target-dialect preference. Existing `NRDB_ID_MODEL` and `NRDB_SURFACE_MODEL` critics remain available.
 
 ## Registered NRDB jobs
 
@@ -46,18 +70,29 @@ Create a production morphology job on rows lacking annotation:
 nrdb-agent create \
   --dataset-id 21 \
   --task morph \
+  --semantic-feedback none \
   --needs annotation \
   --model gpt-5.6-terra
 ```
 
-Use existing human translations as morphology constraints, but do not generate translations:
+Use existing human translations as morphology constraints, but do not generate translation output:
 
 ```bash
 nrdb-agent create \
   --dataset-id 21 \
   --task morph \
-  --translation-evidence use \
+  --semantic-feedback existing \
   --morphology-source predict
+```
+
+Require such translations:
+
+```bash
+nrdb-agent create \
+  --dataset-id 21 \
+  --task morph \
+  --semantic-feedback existing \
+  --require-semantic-feedback
 ```
 
 Translate only from existing/gold morphology:
@@ -66,7 +101,8 @@ Translate only from existing/gold morphology:
 nrdb-agent create \
   --dataset-id 21 \
   --task translate \
-  --morphology-source existing
+  --morphology-source existing \
+  --semantic-feedback none
 ```
 
 Select rows where annotation or translation is absent:
@@ -110,6 +146,7 @@ Morph all unannotated rows:
 ```bash
 nrdb-agent process data.xlsx \
   --task morph \
+  --semantic-feedback none \
   --needs annotation \
   --model gpt-5.6-terra \
   --output analyzed.tsv
@@ -127,6 +164,7 @@ Translation only from existing morphology:
 nrdb-agent process data.xlsx \
   --task translate \
   --morphology-source existing \
+  --semantic-feedback none \
   --output translations.tsv
 ```
 
@@ -145,6 +183,7 @@ Because TSV has no `_meta_`, schema and region are supplied explicitly; `--diale
 ```bash
 nrdb-agent process input.tsv \
   --task morph-translate \
+  --semantic-feedback generated \
   --annotation-schema 2 \
   --region 宮古 \
   --dialect 19 \
@@ -163,6 +202,65 @@ The TSV output preserves original columns and appends:
 - `ai_error`
 - `ai_evidence_json`
 
+## Direct one-line demo
+
+Miyako -> Japanese defaults to the full demonstrated pipeline with **generated semantic feedback**:
+
+```bash
+nrdb-agent translate 'aga za ndza...' \
+  --target japanese \
+  --annotation-schema 2 \
+  --region 宮古
+```
+
+This is equivalent to adding:
+
+```bash
+--semantic-feedback generated
+```
+
+For ablations you can switch it off:
+
+```bash
+--semantic-feedback none
+```
+
+or supply an existing translation strictly as morphology evidence:
+
+```bash
+--semantic-feedback existing \
+--existing-translation '東はどこにあるのか。'
+```
+
+The supplied existing translation is hidden from final Japanese generation.
+
+## Morph ceiling evaluation
+
+`nrdb-agent-morph-eval` supports the same semantic-feedback axis and durable checkpoints. To compare the three morphology conditions on the **same translation-present cohort**, keep run, model, seed, limit, and `--translation-filter present` fixed:
+
+```bash
+# A. Morph only
+nrdb-agent-morph-eval RUN \
+  --semantic-feedback none \
+  --translation-filter present \
+  --seed 4 --limit 20 --output eval_none.tsv
+
+# B. Generated Japanese semantic feedback
+nrdb-agent-morph-eval RUN \
+  --semantic-feedback generated \
+  --translation-filter present \
+  --seed 4 --limit 20 --output eval_generated.tsv
+
+# C. Existing human/data translation semantic feedback
+nrdb-agent-morph-eval RUN \
+  --semantic-feedback existing \
+  --require-semantic-feedback \
+  --translation-filter present \
+  --seed 4 --limit 20 --output eval_existing.tsv
+```
+
+`--translation-filter any|present|absent` is independent of semantic feedback. It exists so ablation conditions can be evaluated on identical cohorts. Checkpoint metadata includes both controls, preventing accidental cross-condition resume.
+
 ## Missingness filters
 
 `--needs` is independent of the requested task:
@@ -177,4 +275,4 @@ For NRDB text datasets `--text-id` refers to `text_sentence_meta.text_id`. `--se
 
 ## Legacy jobs
 
-The old `--mode blind_gold|unannotated`, `--prompt-version`, `--translate`, and `--blind-translation` flags remain accepted. Supplying one of those flags creates a legacy job through the original API. New jobs use the task-based workflow endpoint.
+The old `--mode blind_gold|unannotated`, `--prompt-version`, `--translate`, `--blind-translation`, and hidden `--translation-evidence` compatibility path remain accepted. New workflows should use `--semantic-feedback` explicitly.
