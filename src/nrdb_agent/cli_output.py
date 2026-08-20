@@ -46,7 +46,7 @@ def add_output_mode_args(parser):
 	group.add_argument("--quiet", action="store_true", help="Show major milestones and completed results; this is the default")
 	group.add_argument("--verbose", action="store_true", help="Show the full diagnostic/tool trace plus completed results")
 	group.add_argument("--silent", action="store_true", help="Show an unlabeled milestone bar plus completed results")
-	group.add_argument("--compact", action="store_true", help="Show a labeled milestone bar plus completed results")
+	group.add_argument("--compact", action="store_true", help="Show a labeled milestone bar plus source and completed results")
 	return group
 
 
@@ -193,7 +193,15 @@ class WorkflowProgress(TranslationProgress):
 		prefix = "[{}/{}]".format(index, total)
 		value = _result_text(task, result)
 		cost = estimated_cost_text(result)
-		print("{} {} ({})".format(prefix, value, cost), file=self.stream)
+		if self.mode == "compact":
+			source = str(result.get("source") or "").strip() if isinstance(result, dict) else ""
+			if source:
+				print("{} {}".format(prefix, source), file=self.stream)
+				print("{}→ {} ({})".format(" " * (len(prefix) + 1), value, cost), file=self.stream)
+			else:
+				print("{} {} ({})".format(prefix, value, cost), file=self.stream)
+		else:
+			print("{} {} ({})".format(prefix, value, cost), file=self.stream)
 		self.stream.flush()
 
 	def item_error(self, index, total, error, label=None):
