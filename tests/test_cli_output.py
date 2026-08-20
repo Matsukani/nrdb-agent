@@ -76,3 +76,14 @@ def test_workflow_progress_streams_translation_and_item_cost():
 	value = stream.getvalue()
 	assert "[2/100] 東はどこにあるのか。 ($0.0901)" in value
 	assert "100/100 completed | failed=0 | estimated total $0.8427" in value
+
+
+def test_compact_workflow_result_shows_source_then_translation_and_cost():
+	stream = StringIO()
+	value = _value()
+	value["source"] = "agarɿ wa nzaːn aɿga"
+	progress = WorkflowProgress("compact", stream=stream, progress_stream=StringIO())
+	progress.item_result(7, 20, "translate", value, "sentence 77")
+	lines = stream.getvalue().splitlines()
+	assert lines[0] == "[7/20] agarɿ wa nzaːn aɿga"
+	assert lines[1].strip() == "→ 東はどこにあるのか。 ($0.0901)"
