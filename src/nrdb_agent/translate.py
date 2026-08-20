@@ -1,10 +1,10 @@
 import json
 import os
 
-from .annotator_v9 import AnnotationAgentV9
 from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
+from .task_agent import SEMANTIC_FEEDBACK_MODES, TaskAwareAnnotationAgent
 from .usage import UsageTracker, tracked_client
 
 
@@ -68,7 +68,9 @@ def _annotate_with_json_retry(agent, item, job, morph, progress):
 	raise RuntimeError("direct translation JSON retry failed")
 
 
-def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None, model_name="gpt-5.6", surface_model=None, id_model=None, openai_client=None, progress=print):
+def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None,
+	model_name="gpt-5.6", surface_model=None, id_model=None, semantic_feedback="generated",
+	require_semantic_feedback=False, existing_translation=None, openai_client=None, progress=print):
 	text = str(text or "").strip()
 	region = str(region or "").strip()
 	if not text:
@@ -81,6 +83,9 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	target = str(target or "").strip().lower()
 	if target not in {"japanese", "miyako"}:
 		raise ValueError("target must be japanese or miyako")
+	semantic_feedback = str(semantic_feedback or "none")
+	if semantic_feedback not in SEMANTIC_FEEDBACK_MODES:
+		raise ValueError("invalid semantic_feedback: {}".format(semantic_feedback))
 
 	dialects = _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids)
 	nrdb.exclude_job_id = 0
@@ -90,16 +95,30 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 
 	if target == "japanese":
 		dialect_id = dialects[0]
-		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} forward=annotation-v9 model={}".format(region, dialect_id, annotation_schema_id, model_name))
+		existing_translation = str(existing_translation or "").strip()
+		if semantic_feedback == "existing" and require_semantic_feedback and not existing_translation:
+			raise ValueError("semantic_feedback=existing requires --existing-translation")
+		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} forward=annotation-v9 model={} semantic_feedback={}".format(
+			region, dialect_id, annotation_schema_id, model_name, semantic_feedback,
+		))
 		progress("  morph: analyze")
 		morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
 		_trace_morph_provenance(progress, morph)
 		progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
 		if id_model:
 			progress("  forward ID critic: {}".format(id_model))
-		item = {"sentence_id": 0, "dialect_id": dialect_id, "dialect_region": region, "text": text, "translation_jp": None}
-		job = {"annotation_schema_id": annotation_schema_id, "model_name": model_name, "prompt_version": "annotation-v9", "produce_translation": True, "blind_translation": False}
-		agent = AnnotationAgentV9(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
+		item = {
+			"sentence_id": 0, "dialect_id": dialect_id, "dialect_region": region, "text": text,
+			"translation_jp": existing_translation if semantic_feedback in {"existing", "auto"} else None,
+		}
+		job = {
+			"annotation_schema_id": annotation_schema_id, "model_name": model_name,
+			"prompt_version": "annotation-v9", "task": "morph-translate",
+			"semantic_feedback": semantic_feedback,
+			"require_semantic_feedback": bool(require_semantic_feedback),
+			"morphology_source": "predict", "produce_translation": True, "blind_translation": False,
+		}
+		agent = TaskAwareAnnotationAgent(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
 		result = _annotate_with_json_retry(agent, item, job, morph, progress)
 		usage = usage_tracker.summary()
 		_trace_usage(progress, usage)
@@ -107,11 +126,14 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			"direction": "miyako_to_japanese", "source": text, "region": region,
 			"annotation_schema_id": annotation_schema_id, "morph_dialect_id": dialect_id,
 			"morph_inference": _morph_provenance(morph), "llm_model": model_name,
+			"semantic_feedback": semantic_feedback,
 			"segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""),
 			"translation": result.get("trsl_ai", ""), "decision": result.get("decision"),
 			"confidence": result.get("confidence"), "api_usage": usage, "evidence": result.get("evidence", {}),
 		}
 
+	if semantic_feedback != "none" or require_semantic_feedback:
+		raise ValueError("semantic feedback is not used for Japanese -> Miyako direct translation")
 	if not dialect_ids:
 		raise ValueError("Japanese -> Miyako translation requires an ordered --dialects list")
 	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
