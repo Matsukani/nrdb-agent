@@ -29,6 +29,46 @@ def _dataset_ids(value):
 	return out or None
 
 
+def _positive_int(value):
+	try:
+		parsed = int(value)
+	except ValueError as error:
+		raise argparse.ArgumentTypeError("value must be a positive integer") from error
+	if parsed < 1:
+		raise argparse.ArgumentTypeError("value must be a positive integer")
+	return parsed
+
+
+def _exclude_text(value):
+	parts = str(value).split(":")
+	if len(parts) != 2:
+		raise argparse.ArgumentTypeError("text exclusion must be DATASET_ID:TEXT_INTERNAL_ID")
+	try:
+		dataset_id, text_id = (int(part) for part in parts)
+	except ValueError as error:
+		raise argparse.ArgumentTypeError("text exclusion IDs must be integers") from error
+	if dataset_id < 1 or text_id < 1:
+		raise argparse.ArgumentTypeError("text exclusion IDs must be positive")
+	return (dataset_id, text_id)
+
+
+def _exclude_sentence_range(value):
+	parts = str(value).split(":")
+	if len(parts) not in {2, 3}:
+		raise argparse.ArgumentTypeError("sentence exclusion must be DATASET_ID:SENTENCE_ID or DATASET_ID:START:END")
+	try:
+		values = [int(part) for part in parts]
+	except ValueError as error:
+		raise argparse.ArgumentTypeError("sentence exclusion IDs must be integers") from error
+	if any(item < 1 for item in values):
+		raise argparse.ArgumentTypeError("sentence exclusion IDs must be positive")
+	if len(values) == 2:
+		return (values[0], values[1], values[1])
+	if values[2] < values[1]:
+		raise argparse.ArgumentTypeError("sentence exclusion END must be >= START")
+	return tuple(values)
+
+
 def _pct(value):
 	return "n/a" if value is None else "{:.1f}%".format(100.0 * float(value))
 
@@ -71,6 +111,10 @@ def _print_summary(payload):
 		" (required)" if summary.get("require_semantic_feedback") else "",
 	))
 	print("  translation filter:         {}".format(summary.get("translation_filter", "any")))
+	exclusion = summary.get("evidence_exclusion") or {}
+	print("  evidence exclude datasets:  {}".format(exclusion.get("datasets", [])))
+	print("  evidence exclude texts:     {}".format(exclusion.get("texts", [])))
+	print("  evidence exclude ranges:    {}".format(exclusion.get("sentence_ranges", [])))
 	print()
 	print("BASELINE -> AGENT")
 	print("  ID match rate:              {} -> {}".format(_pct(baseline["id"]["id_match_rate"]), _pct(agent["id"]["id_match_rate"])))
@@ -119,7 +163,10 @@ def main(argv=None):
 	parser.add_argument("morph_run", help="nrdb-morph training-run directory containing train.jsonl")
 	parser.add_argument("--model", default="gpt-5.6-terra", help="agent LLM model")
 	parser.add_argument("--dataset-ids", type=_dataset_ids, default=None, metavar="ID1,ID2,...", help="optional subset of datasets represented in train.jsonl")
-	parser.add_argument("--text-id", type=int, default=None, help="restrict one text dataset to its dataset-scoped internal text ID; requires exactly one --dataset-ids value")
+	parser.add_argument("--text-id", type=int, default=None, help="restrict one text dataset to its dataset-scoped internal text ID; that whole text is automatically excluded from corpus evidence")
+	parser.add_argument("--exclude-dataset", action="append", type=_positive_int, default=[], metavar="DATASET_ID", help="exclude an entire dataset from corpus-backed agent evidence; repeatable")
+	parser.add_argument("--exclude-text", action="append", type=_exclude_text, default=[], metavar="DATASET_ID:TEXT_ID", help="exclude one internal text from corpus-backed agent evidence; repeatable")
+	parser.add_argument("--exclude-sentences", action="append", type=_exclude_sentence_range, default=[], metavar="DATASET_ID:START:END", help="exclude sentence/lxs DB-ID range from corpus-backed evidence; repeatable; a single DATASET_ID:ID is also accepted")
 	parser.add_argument("--limit", type=int, default=None, help="score at most N eligible non-training rows")
 	parser.add_argument("--seed", type=int, default=1, help="deterministic cohort shuffle seed; ignored for explicit text scope")
 	parser.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default="none", help="Morphology semantic feedback: none, generated Japanese, existing data translation, or auto")
@@ -129,7 +176,7 @@ def main(argv=None):
 	parser.add_argument("--id-model", default=None, help="ID-sequence critic; defaults to NRDB_ID_MODEL")
 	parser.add_argument("--output", default=None, help="write per-row .tsv or complete .json; also defines default checkpoint path")
 	parser.add_argument("--checkpoint", default=None, help="durable JSONL checkpoint path; defaults to OUTPUT.checkpoint.jsonl")
-	parser.add_argument("--resume", action="store_true", help="resume the exact same cohort from an existing durable checkpoint")
+	parser.add_argument("--resume", action="store_true", help="resume the exact same cohort and evidence boundary from an existing durable checkpoint")
 	parser.add_argument("--json", action="store_true", help="print complete JSON instead of human summary")
 	parser.add_argument("--quiet", action="store_true", help="suppress per-row progress")
 	parser.add_argument("--agent-url", default=None)
@@ -154,6 +201,9 @@ def main(argv=None):
 		semantic_feedback=args.semantic_feedback,
 		require_semantic_feedback=args.require_semantic_feedback,
 		translation_filter=args.translation_filter, text_internal_id=args.text_id,
+		evidence_exclude_datasets=args.exclude_dataset,
+		evidence_exclude_texts=args.exclude_text,
+		evidence_exclude_sentence_ranges=args.exclude_sentences,
 		progress=progress,
 	)
 	if args.json:
