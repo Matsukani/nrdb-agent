@@ -83,6 +83,22 @@ def _job_scope(progress, bundle):
 	)
 
 
+def _morph_baseline(morph, source="nrdb-morph"):
+	if not isinstance(morph, dict):
+		return None
+	segmented = str(morph.get("segmented") or "").strip()
+	annotation = str(morph.get("annotation") or "").strip()
+	if not segmented and not annotation:
+		return None
+	inference = morph.get("inference") if isinstance(morph.get("inference"), dict) else {}
+	return {
+		"source": source,
+		"segmented": segmented,
+		"annotation": annotation,
+		"inference": inference,
+	}
+
+
 def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt-5.6",
 	semantic_feedback=None, require_semantic_feedback=False, morphology_source="predict",
 	target_dialect_ids=None, id_model=None, surface_model=None, openai_client=None,
@@ -140,6 +156,7 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 			"translation": result.get("segmented", ""), "decision": result.get("decision"),
 			"confidence": result.get("confidence"), "evidence": result.get("evidence", {}),
 			"api_usage": usage, "estimated_cost_usd": _usage_cost(usage), "model": model_name,
+			"morph_baseline": None,
 		}
 
 	segmented, annotation = _existing_morphology(item)
@@ -167,8 +184,15 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		"blind_translation": False,
 	}
 	agent = TaskAwareAnnotationAgent(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
+	morph_baseline = None
 
 	if use_existing:
+		morph_baseline = {
+			"source": "existing",
+			"segmented": segmented,
+			"annotation": annotation,
+			"inference": {},
+		}
 		if task == "morph":
 			result = {
 				"segmented": segmented, "annotation": annotation, "trsl_ai": "",
@@ -180,6 +204,7 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 	else:
 		progress("  morph: analyze")
 		morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
+		morph_baseline = _morph_baseline(morph)
 		result = agent.annotate(forward_item, job, morph)
 
 	usage = tracker.summary()
@@ -188,7 +213,7 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		"translation": result.get("trsl_ai", ""), "decision": result.get("decision"),
 		"confidence": result.get("confidence"), "evidence": result.get("evidence", {}),
 		"api_usage": usage, "estimated_cost_usd": _usage_cost(usage), "model": model_name,
-		"semantic_feedback": semantic_feedback,
+		"semantic_feedback": semantic_feedback, "morph_baseline": morph_baseline,
 	}
 
 
@@ -224,6 +249,8 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 			pricing_complete = pricing_complete and _pricing_complete(result)
 			evidence = dict(result.get("evidence") or {})
 			evidence["api_usage"] = result.get("api_usage", {})
+			if result.get("morph_baseline"):
+				evidence["morph_baseline"] = result["morph_baseline"]
 			nrdb.save_result(
 				job_id=job_id, sentence_id=item["sentence_id"], segmented=result.get("segmented", ""),
 				annotation=result.get("annotation", ""),
