@@ -3,13 +3,7 @@ import json
 
 from .asr_review import review_asr_predictions
 from .batch import export_job_results_tsv, process_dataset
-from .cli_output import (
-	TranslationProgress,
-	WorkflowProgress,
-	add_output_mode_args,
-	output_mode_from_args,
-	silent_translation_line,
-)
+from .cli_output import TranslationProgress, WorkflowProgress, add_output_mode_args, output_mode_from_args, silent_translation_line
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
 from .runner import run_job
@@ -44,9 +38,7 @@ def _print_asr_review(value):
 	print("  baseline headroom recovered: {}".format(_pct(value.get("baseline_headroom_recovered"))))
 	print("  rank-1 retained:             {}".format(value.get("rank1_retained", 0)))
 	print("  changed:                     {}".format(value.get("agent_changed", 0)))
-	print("  improved / harmful / neutral: {} / {} / {}".format(
-		value.get("improved_rows", 0), value.get("harmful_rows", 0), value.get("neutral_rows", 0),
-	))
+	print("  improved / harmful / neutral: {} / {} / {}".format(value.get("improved_rows", 0), value.get("harmful_rows", 0), value.get("neutral_rows", 0)))
 	print("  oracle-rank selections:      {}".format(value.get("oracle_rank_selected_rows", 0)))
 
 
@@ -105,10 +97,8 @@ def _semantic_settings(args):
 	if legacy is not None:
 		if mode != "none" or require:
 			raise ValueError("--translation-evidence cannot be combined with --semantic-feedback or --require-semantic-feedback")
-		if legacy == "required":
-			return "existing", True
-		if legacy == "use":
-			return "existing", False
+		if legacy == "required": return "existing", True
+		if legacy == "use": return "existing", False
 		return "none", False
 	return mode, require
 
@@ -148,21 +138,14 @@ def _print_jobs(jobs, short=False):
 		model = str(job.get("model_name") or "")
 		limit = job.get("item_limit") or "?"
 		created = str(job.get("created_at") or "")
+		construction_text = " constructions" if job.get("use_constructions") else ""
 		if short:
-			print("#{:<4} {:<10} ds={} {:<18} {:<15} model={} limit={} scope={} {}".format(
-				job_id, status, dataset_id, dataset_name[:18], task, model, limit, _job_scope_text(job), created,
-			).rstrip())
+			print("#{:<4} {:<10} ds={} {:<18} {:<15} model={} limit={} scope={}{} {}".format(job_id, status, dataset_id, dataset_name[:18], task, model, limit, _job_scope_text(job), construction_text, created).rstrip())
 			continue
-		print("#{}  {}  dataset {}{}  task={}  model={}".format(
-			job_id, status, dataset_id, " ({})".format(dataset_name) if dataset_name else "", task, model,
-		))
-		print("  limit={} seed={} scope={} created={}".format(
-			limit, job.get("selection_seed") or "?", _job_scope_text(job), created or "?",
-		))
+		print("#{}  {}  dataset {}{}  task={}  model={}".format(job_id, status, dataset_id, " ({})".format(dataset_name) if dataset_name else "", task, model))
+		print("  limit={} seed={} scope={} created={}".format(limit, job.get("selection_seed") or "?", _job_scope_text(job), created or "?"))
 		if job.get("morphology_source") or job.get("semantic_feedback") or job.get("needs_filter"):
-			print("  morphology={} semantic_feedback={} needs={}".format(
-				job.get("morphology_source") or "-", job.get("semantic_feedback") or "-", job.get("needs_filter") or "-",
-			))
+			print("  morphology={} semantic_feedback={} constructions={} needs={}".format(job.get("morphology_source") or "-", job.get("semantic_feedback") or "-", "on" if job.get("use_constructions") else "off", job.get("needs_filter") or "-"))
 
 
 def _print_results(payload, show_sentences=0):
@@ -178,24 +161,18 @@ def _print_results(payload, show_sentences=0):
 			if reverse:
 				print("Japanese:    {}".format(row.get("translation_jp") or row.get("gold_translation_jp") or ""))
 				print("pred IDs:    {}".format(row.get("ai_annotation") or ""))
-				if row.get("ai_segmented"):
-					print("pred Miyako: {}".format(row.get("ai_segmented") or ""))
+				if row.get("ai_segmented"): print("pred Miyako: {}".format(row.get("ai_segmented") or ""))
 				print("gold IDs:    {}".format(row.get("gold_annotation") or ""))
 				print("gold Miyako: {}".format(row.get("source_text") or ""))
 			else:
 				print("source:      {}".format(row.get("source_text") or ""))
 				print("segmented:   {}".format(row.get("ai_segmented") or ""))
-				if row.get("gold_segmented"):
-					print("gold seg:    {}".format(row.get("gold_segmented") or ""))
+				if row.get("gold_segmented"): print("gold seg:    {}".format(row.get("gold_segmented") or ""))
 				print("annotation:  {}".format(row.get("ai_annotation") or ""))
-				if row.get("trsl_ai"):
-					print("translation: {}".format(row["trsl_ai"]))
-				if row.get("gold_translation_jp"):
-					print("gold trsl:   {}".format(row["gold_translation_jp"]))
-				elif row.get("translation_jp"):
-					print("human trsl:  {}".format(row["translation_jp"]))
-				if row.get("gold_annotation"):
-					print("gold ann:    {}".format(row.get("gold_annotation") or ""))
+				if row.get("trsl_ai"): print("translation: {}".format(row["trsl_ai"]))
+				if row.get("gold_translation_jp"): print("gold trsl:   {}".format(row["gold_translation_jp"]))
+				elif row.get("translation_jp"): print("human trsl:  {}".format(row["translation_jp"]))
+				if row.get("gold_annotation"): print("gold ann:    {}".format(row.get("gold_annotation") or ""))
 			metrics = annotation_metrics(row.get("ai_annotation"), row.get("gold_annotation")) if row.get("gold_annotation") else None
 			linguistic_exact = int(metrics["linguistic_exact"]) if metrics is not None else "n/a"
 			raw_exact = row.get("exact_match") if row.get("exact_match") is not None else "n/a"
@@ -223,8 +200,7 @@ def _print_results(payload, show_sentences=0):
 			print("  boundary F1:        {}".format(_pct(seg_metrics["boundary_f1"])))
 			print("  false positives:    {}".format(seg_metrics["false_positive_boundaries"]))
 			print("  false negatives:    {}".format(seg_metrics["false_negative_boundaries"]))
-			if seg_metrics["surface_mismatches"]:
-				print("  surface mismatches: {}".format(seg_metrics["surface_mismatches"]))
+			if seg_metrics["surface_mismatches"]: print("  surface mismatches: {}".format(seg_metrics["surface_mismatches"]))
 			print()
 	metrics = job_annotation_metrics(rows)
 	if metrics["sentences_scored"]:
@@ -280,6 +256,7 @@ def main():
 	create.add_argument("--task", choices=["morph", "translate", "morph-translate", "reverse"], default="morph")
 	create.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default="none", help="Morphology semantic review: none, generated Japanese, existing data translation, or auto")
 	create.add_argument("--require-semantic-feedback", action="store_true", help="Fail rows when the selected semantic-feedback source cannot be supplied")
+	create.add_argument("--constructions", action="store_true", help="Use curated NRDB constructional evidence during Japanese translation")
 	create.add_argument("--morphology-source", choices=["predict", "existing", "auto"], default="predict", help="Predict morphology, freeze existing morphology, or use existing when available")
 	create.add_argument("--needs", choices=["any", "annotation", "translation", "either", "both"], default="any", help="Select rows missing annotation, translation, either, both, or no missingness filter")
 	create.add_argument("--text-id", type=int, default=None, help="Restrict a text dataset to one internal text_id")
@@ -317,6 +294,7 @@ def main():
 	process.add_argument("--dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...", help="Ordered target dialects for reverse")
 	process.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default="none")
 	process.add_argument("--require-semantic-feedback", action="store_true")
+	process.add_argument("--constructions", action="store_true", help="Use curated NRDB constructional evidence during Japanese translation")
 	process.add_argument("--morphology-source", choices=["predict", "existing", "auto"], default="predict")
 	process.add_argument("--needs", choices=["any", "annotation", "translation", "either", "both"], default="any")
 	process.add_argument("--model", default="gpt-5.6")
@@ -336,6 +314,7 @@ def main():
 	translate.add_argument("--dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...")
 	translate.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default=None, help="For Miyako→Japanese, default is generated; for Japanese→Miyako, semantic feedback is not used")
 	translate.add_argument("--require-semantic-feedback", action="store_true")
+	translate.add_argument("--constructions", action="store_true", help="Use curated NRDB constructional evidence before Japanese translation")
 	translate.add_argument("--existing-translation", default=None, help="Existing Japanese translation used only when semantic feedback is existing/auto; never exposed to output generation")
 	translate.add_argument("--surface-model", default=None)
 	translate.add_argument("--model", default="gpt-5.6")
@@ -379,11 +358,11 @@ def main():
 			except ValueError as error:
 				parser.error(str(error))
 			start = end = None
-			if args.sentence_id:
-				start, end = args.sentence_id
+			if args.sentence_id: start, end = args.sentence_id
 			_print_json(nrdb.create_workflow_job(
 				args.dataset_id, args.task, args.limit, args.model, args.seed,
 				semantic_feedback=semantic_feedback, require_semantic_feedback=require_semantic_feedback,
+				use_constructions=args.constructions,
 				morphology_source=args.morphology_source, needs_filter=args.needs,
 				scope_text_id=args.text_id, scope_sentence_start=start, scope_sentence_end=end,
 			))
@@ -391,63 +370,48 @@ def main():
 		jobs = _select_jobs(nrdb.jobs(), latest=args.latest)
 		_print_json(jobs) if args.json else _print_jobs(jobs, short=args.short)
 	elif args.command == "run":
-		if args.json and _explicit_output_mode(args):
-			parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
+		if args.json and _explicit_output_mode(args): parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
 		display = (lambda _message: None) if args.json else WorkflowProgress(output_mode_from_args(args))
 		try:
 			try:
-				value = run_workflow_job(
-					nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects,
-					id_model=args.id_model, surface_model=args.surface_model, progress=display,
-				)
+				value = run_workflow_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, id_model=args.id_model, surface_model=args.surface_model, progress=display)
 			except RuntimeError as error:
-				if "Legacy job" not in str(error):
-					raise
-				value = run_job(
-					nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects,
-					surface_model=args.surface_model, id_model=args.id_model, progress=display,
-				)
+				if "Legacy job" not in str(error): raise
+				value = run_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, surface_model=args.surface_model, id_model=args.id_model, progress=display)
 		finally:
-			if hasattr(display, "stop"):
-				display.stop()
-		if args.json:
-			_print_json(value)
+			if hasattr(display, "stop"): display.stop()
+		if args.json: _print_json(value)
 	elif args.command == "process":
-		if args.json and _explicit_output_mode(args):
-			parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
+		if args.json and _explicit_output_mode(args): parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
 		try:
 			semantic_feedback, require_semantic_feedback = _semantic_settings(args)
 		except ValueError as error:
 			parser.error(str(error))
+		if args.task == "reverse" and args.constructions: parser.error("--constructions applies only to Miyako -> Japanese translation")
 		display = (lambda _message: None) if args.json else WorkflowProgress(output_mode_from_args(args))
 		try:
 			value = process_dataset(
 				nrdb, args.input, args.task, model_name=args.model, component=args.component,
 				annotation_schema_id=args.annotation_schema_id, region=args.region, default_dialect_id=args.dialect_id,
 				semantic_feedback=semantic_feedback, require_semantic_feedback=require_semantic_feedback,
-				morphology_source=args.morphology_source, needs=args.needs,
-				target_dialect_ids=args.dialects, id_model=args.id_model,
-				surface_model=args.surface_model, output=args.output, limit=args.limit, progress=display,
+				use_constructions=args.constructions, morphology_source=args.morphology_source, needs=args.needs,
+				target_dialect_ids=args.dialects, id_model=args.id_model, surface_model=args.surface_model,
+				output=args.output, limit=args.limit, progress=display,
 			)
 		finally:
-			if hasattr(display, "stop"):
-				display.stop()
-		if args.json:
-			_print_json(value)
+			if hasattr(display, "stop"): display.stop()
+		if args.json: _print_json(value)
 	elif args.command == "translate":
-		if args.target == "miyako" and not args.dialects:
-			parser.error("Japanese -> Miyako translation requires --dialects ID1,ID2,...")
-		if args.json and _explicit_output_mode(args):
-			parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
+		if args.target == "miyako" and not args.dialects: parser.error("Japanese -> Miyako translation requires --dialects ID1,ID2,...")
+		if args.json and _explicit_output_mode(args): parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
 		semantic_feedback = args.semantic_feedback
-		if semantic_feedback is None:
-			semantic_feedback = "generated" if args.target == "japanese" else "none"
-		if args.target == "miyako" and (semantic_feedback != "none" or args.require_semantic_feedback or args.existing_translation):
-			parser.error("semantic feedback is only applicable to direct Miyako -> Japanese translation")
+		if semantic_feedback is None: semantic_feedback = "generated" if args.target == "japanese" else "none"
+		if args.target == "miyako" and (semantic_feedback != "none" or args.require_semantic_feedback or args.existing_translation or args.constructions):
+			parser.error("semantic feedback and constructions are only applicable to direct Miyako -> Japanese translation")
 		kwargs = dict(
 			dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
 			semantic_feedback=semantic_feedback, require_semantic_feedback=args.require_semantic_feedback,
-			existing_translation=args.existing_translation,
+			use_constructions=args.constructions, existing_translation=args.existing_translation,
 		)
 		if args.json:
 			value = translate_text(nrdb, args.text, args.target, args.annotation_schema_id, args.region, progress=lambda _message: None, **kwargs)
@@ -460,17 +424,10 @@ def main():
 				value = translate_text(nrdb, args.text, args.target, args.annotation_schema_id, args.region, progress=display, **kwargs)
 			finally:
 				display.stop()
-			if mode in {"silent", "compact"}:
-				print(silent_translation_line(value))
-			else:
-				_print_translation(value)
+			if mode in {"silent", "compact"}: print(silent_translation_line(value))
+			else: _print_translation(value)
 	elif args.command == "asr-review":
-		value = review_asr_predictions(
-			nrdb, args.predictions, args.out_dir, args.annotation_schema_id, args.region, args.dialect_id,
-			model_name=args.model, id_model_path=args.id_model, surface_model_path=args.surface_model,
-			phrase_boundary_model_path=args.phrase_boundary_model, limit=args.limit,
-			max_candidates=args.max_candidates, use_llm=not args.no_llm,
-		)
+		value = review_asr_predictions(nrdb, args.predictions, args.out_dir, args.annotation_schema_id, args.region, args.dialect_id, model_name=args.model, id_model_path=args.id_model, surface_model_path=args.surface_model, phrase_boundary_model_path=args.phrase_boundary_model, limit=args.limit, max_candidates=args.max_candidates, use_llm=not args.no_llm)
 		_print_json(value) if args.json else _print_asr_review(value)
 	elif args.command == "show":
 		_print_json(_show_with_linguistic_metrics(nrdb, args.job_id))
@@ -478,8 +435,7 @@ def main():
 		if args.output:
 			_print_json(export_job_results_tsv(nrdb, args.job_id, args.output))
 		else:
-			if args.show_sentences < -1:
-				parser.error("--show-sentences must be a non-negative number, or omitted to show all")
+			if args.show_sentences < -1: parser.error("--show-sentences must be a non-negative number, or omitted to show all")
 			_print_results(nrdb.job_results(args.job_id), show_sentences=args.show_sentences)
 	return 0
 
