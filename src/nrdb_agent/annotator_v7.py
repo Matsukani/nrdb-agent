@@ -19,10 +19,14 @@ Core principles:
 - Most NRDB annotation labels are IDENTIFIERS, not glosses. Do not normally infer lexical meaning from kanji, spelling, or other human-readable material embedded in an ID label.
 - Exception: IDs in the reserved `n:` namespace explicitly represent Japanese lexical material. For example, `n:手紙` directly licenses Japanese 手紙 and does not require dictionary grounding to establish that lexical meaning. Treat the material following `n:` as Japanese lexical content, while still respecting surrounding Miyako grammar and constructional evidence.
 - Outside the reserved `n:` namespace, dictionary and corpus evidence outrank apparent semantics suggested by an ID's spelling. Only as a last resort, when an otherwise ungrounded lexical ID is transparently descriptive and no retrieved evidence contradicts it, you may use that transparent lexical content conservatively. Record such use as weak/ungrounded evidence rather than as authoritative dictionary grounding.
+- When construction_evidence is supplied, it contains explicit grammatical knowledge curated in NRDB. Each row was retrieved because its trigger_id occurs in the frozen annotation, but a trigger hit alone does NOT prove that the construction applies. Check that the row's full pattern fits the relevant annotation span. When it fits, interpret the WHOLE construction according to meaning_jp/realization_jp rather than composing its grammatical atoms independently. A matching curated construction outranks a conflicting default atom-by-atom interpretation or corpus guess.
 
-Goal: produce a concise, natural Japanese translation grounded in the frozen annotation, bilingual dictionary data, and selectively retrieved corpus evidence.
+Goal: produce a concise, natural Japanese translation grounded in the frozen annotation, explicit constructional evidence when enabled, bilingual dictionary data, and selectively retrieved corpus evidence.
 
 Rules:
+- First inspect any supplied construction_evidence. Pattern notation is lightweight linguistic notation over NRDB annotation: V/N/A/X are schematic content-word placeholders; literal IDs occur as written; `;`, `-`, and spaces retain their normal NRDB annotation meanings.
+- Apply a construction only when its full pattern fits. Do not apply a row merely because its trigger_id is present.
+- When a construction applies, its meaning_jp is strong grammatical evidence and realization_jp is a strong Japanese realization hint, not a blind string-substitution command. Ground captured/content lexical IDs from the dictionary and realize the construction naturally in context.
 - Before translating, ground the non-`n:` lexical/content IDs that contribute referential or predicate meaning with ground_lexical_ids. Batch several IDs in one call. Dictionary meaning_jp/explanation_jp outrank any apparent meaning suggested by a non-`n:` ID label.
 - `n:` IDs are already explicit Japanese lexical material and need not be sent to ground_lexical_ids merely to recover their Japanese meaning.
 - ground_lexical_ids accepts exact atomic NRDB annotation IDs only. Never put commentary, questions, guessed decompositions, full phrases, or explanatory text inside the labels array.
@@ -30,9 +34,9 @@ Rules:
 - If a non-`n:` content ID has no usable dictionary grounding, record it in ungrounded_ids and translate conservatively from other evidence. As a final fallback only, transparent lexical material in that ID may be used when it is strongly obvious and is not contradicted by dictionary or corpus evidence.
 - Use corpus_examples primarily for constructional or grammatical interpretation and for contextual disambiguation after lexical grounding. Corpus evidence may help choose among dictionary-attested senses, but should not replace dictionary grounding with an inference from the spelling of a non-`n:` ID.
 - Prefer a short informative construction query. corpus_examples accepts at most 8 hyphen-separated segments and 256 characters.
-- Preserve information explicitly encoded by the frozen analysis, including negation, tense/aspect, modality, case/argument structure, focus/topic, direction/location, quantification, and semantically relevant reduplication.
+- Preserve information explicitly encoded by the frozen analysis, including negation, tense/aspect, modality, case/argument structure, focus/topic, direction/location, quantification, and semantically relevant reduplication, except where an applicable curated construction explicitly establishes a non-compositional interpretation of the whole sequence.
 - Produce natural Japanese rather than an interlinear gloss.
-- Do not add semantic information that is not licensed by dictionary grounding, reserved `n:` Japanese material, the frozen analysis, source context, corpus evidence, or the last-resort transparent-ID fallback described above.
+- Do not add semantic information that is not licensed by constructional evidence, dictionary grounding, reserved `n:` Japanese material, the frozen analysis, source context, corpus evidence, or the last-resort transparent-ID fallback described above.
 - When evidence is incomplete, prefer a conservative translation over an imaginative guess.
 - Do not produce chain-of-thought.
 
@@ -102,11 +106,21 @@ class AnnotationAgentV7(AnnotationAgent):
 			})
 		return {"labels": grounded}
 
+	def _construction_candidates(self, item, job, result):
+		if not job.get("use_constructions"):
+			return []
+		payload = self.nrdb.construction_candidates(
+			result.get("annotation", ""),
+			int(job["annotation_schema_id"]),
+			region=item.get("dialect_region"),
+			dialect_id=item.get("dialect_id"),
+		)
+		candidates = list(payload.get("candidates", []))[:50]
+		self.progress("  translation-v7: construction pass candidates={}".format(len(candidates)))
+		return candidates
+
 	def _v7_translation_tools(self):
-		return [
-			GROUND_LEXICAL_IDS_TOOL,
-			self._tool_by_name("corpus_examples"),
-		]
+		return [GROUND_LEXICAL_IDS_TOOL, self._tool_by_name("corpus_examples")]
 
 	def _tool_by_name(self, name):
 		from .annotator import TOOLS
@@ -134,8 +148,7 @@ class AnnotationAgentV7(AnnotationAgent):
 		if name == "ground_lexical_ids":
 			labels = result.get("labels", [])
 			return "grounded={}/{} rejected={}".format(
-				sum(1 for value in labels if value.get("grounded")),
-				len(labels),
+				sum(1 for value in labels if value.get("grounded")), len(labels),
 				sum(1 for value in labels if value.get("rejected")),
 			)
 		return _trace_result(name, result)
@@ -149,7 +162,7 @@ class AnnotationAgentV7(AnnotationAgent):
 		final_input = list(base_input)
 		if evidence_summary:
 			final_input.append({"role": "user", "content": "Retrieved compact translation evidence:\n" + json.dumps(evidence_summary[-4:], ensure_ascii=False)})
-		final_input.append({"role": "user", "content": "Evidence gathering is finished ({}). Do not call tools. Respect dictionary grounding and return the final conservative Japanese translation now.".format(reason)})
+		final_input.append({"role": "user", "content": "Evidence gathering is finished ({}). Do not call tools. Respect any applicable curated construction evidence and dictionary grounding, and return the final conservative Japanese translation now.".format(reason)})
 		last_error = None
 		for attempt, budget in enumerate((1200, 1800), start=1):
 			self.progress("  translation-v7: forced finalization attempt {} (max_output_tokens={})".format(attempt, budget))
@@ -167,6 +180,12 @@ class AnnotationAgentV7(AnnotationAgent):
 		raise RuntimeError("translation-v7 finalization failed")
 
 	def _translate_frozen_v7(self, item, job, result):
+		construction_candidates = self._construction_candidates(item, job, result)
+
+		def finish(translation):
+			translation.setdefault("translation_evidence", {})["construction_candidates"] = construction_candidates
+			return translation
+
 		payload = {
 			"sentence_id": int(item["sentence_id"]),
 			"source_text": item["text"],
@@ -177,6 +196,13 @@ class AnnotationAgentV7(AnnotationAgent):
 			"annotation_confidence": result["confidence"],
 			"annotation_schema_id": int(job["annotation_schema_id"]),
 		}
+		if job.get("use_constructions"):
+			payload["construction_evidence"] = {
+				"enabled": True,
+				"candidate_count": len(construction_candidates),
+				"candidates": construction_candidates,
+				"instruction": "Trigger hits are candidates only. Apply a construction only if its full pattern fits the frozen annotation span.",
+			}
 		base_input = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 		evidence_summary = []
 		evidence_calls = 0
@@ -195,13 +221,13 @@ class AnnotationAgentV7(AnnotationAgent):
 					continue
 				incomplete_reason = _response_incomplete_reason(response)
 				if incomplete_reason:
-					return self._finalize_translation_v7(base_input, evidence_summary, "previous response incomplete: {}".format(incomplete_reason))
+					return finish(self._finalize_translation_v7(base_input, evidence_summary, "previous response incomplete: {}".format(incomplete_reason)))
 				try:
 					translation = parse_translation_json(response.output_text)
 				except (json.JSONDecodeError, ValueError):
-					return self._finalize_translation_v7(base_input, evidence_summary, "previous final JSON malformed")
+					return finish(self._finalize_translation_v7(base_input, evidence_summary, "previous final JSON malformed"))
 				self.progress("  translation-v7: final confidence={:.3f}".format(translation["confidence"]))
-				return translation
+				return finish(translation)
 
 			self.progress("  translation-v7 tool round {}: {} call(s)".format(round_index, len(calls)))
 			continuation = list(base_input)
@@ -215,7 +241,7 @@ class AnnotationAgentV7(AnnotationAgent):
 					compact = {"grounding_required": True, "message": "Ground non-n: lexical/content IDs with ground_lexical_ids before corpus construction search. Reserved n: IDs already encode Japanese lexical material."}
 					self.progress("    <- corpus_examples: skipped (dictionary grounding required first)")
 				elif evidence_calls >= self.max_translation_evidence_calls:
-					compact = {"budget_exhausted": True, "message": "Translation evidence-call budget exhausted; translate conservatively from dictionary grounding, reserved n: Japanese material, and existing evidence."}
+					compact = {"budget_exhausted": True, "message": "Translation evidence-call budget exhausted; translate conservatively from curated constructions, dictionary grounding, reserved n: Japanese material, and existing evidence."}
 					self.progress("    <- {}: skipped (translation evidence budget exhausted)".format(call.name))
 				else:
 					tool_result = self._v7_tool_result(call.name, arguments, item, int(job["annotation_schema_id"]))
@@ -227,12 +253,11 @@ class AnnotationAgentV7(AnnotationAgent):
 
 			self.progress("  translation-v7: continue after tool round {} (evidence {}/{})".format(round_index, evidence_calls, self.max_translation_evidence_calls))
 			if evidence_calls >= self.max_translation_evidence_calls:
-				return self._finalize_translation_v7(base_input, evidence_summary, "translation evidence budget exhausted")
+				return finish(self._finalize_translation_v7(base_input, evidence_summary, "translation evidence budget exhausted"))
 			response = self._create_response(continuation, V7_TRANSLATION_INSTRUCTIONS, tools=tools, max_output_tokens=900)
 		raise RuntimeError("translation-v7 phase exceeded maximum tool rounds")
 
 	def annotate(self, item, job, morph_result):
-		# v7 intentionally reuses the proven v6 annotation behavior unchanged.
 		annotation_job = dict(job)
 		annotation_job["prompt_version"] = "annotation-v6"
 		annotation_job["produce_translation"] = False
