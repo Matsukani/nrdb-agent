@@ -138,14 +138,17 @@ def _print_jobs(jobs, short=False):
 		model = str(job.get("model_name") or "")
 		limit = job.get("item_limit") or "?"
 		created = str(job.get("created_at") or "")
-		construction_text = " constructions" if job.get("use_constructions") else ""
+		flags = []
+		if job.get("use_constructions"): flags.append("constructions")
+		if job.get("use_licensed_forms"): flags.append("licensed")
+		flag_text = (" " + "+".join(flags)) if flags else ""
 		if short:
-			print("#{:<4} {:<10} ds={} {:<18} {:<15} model={} limit={} scope={}{} {}".format(job_id, status, dataset_id, dataset_name[:18], task, model, limit, _job_scope_text(job), construction_text, created).rstrip())
+			print("#{:<4} {:<10} ds={} {:<18} {:<15} model={} limit={} scope={}{} {}".format(job_id, status, dataset_id, dataset_name[:18], task, model, limit, _job_scope_text(job), flag_text, created).rstrip())
 			continue
 		print("#{}  {}  dataset {}{}  task={}  model={}".format(job_id, status, dataset_id, " ({})".format(dataset_name) if dataset_name else "", task, model))
 		print("  limit={} seed={} scope={} created={}".format(limit, job.get("selection_seed") or "?", _job_scope_text(job), created or "?"))
 		if job.get("morphology_source") or job.get("semantic_feedback") or job.get("needs_filter"):
-			print("  morphology={} semantic_feedback={} constructions={} needs={}".format(job.get("morphology_source") or "-", job.get("semantic_feedback") or "-", "on" if job.get("use_constructions") else "off", job.get("needs_filter") or "-"))
+			print("  morphology={} semantic_feedback={} constructions={} licensed={} needs={}".format(job.get("morphology_source") or "-", job.get("semantic_feedback") or "-", "on" if job.get("use_constructions") else "off", "on" if job.get("use_licensed_forms") else "off", job.get("needs_filter") or "-"))
 
 
 def _print_results(payload, show_sentences=0):
@@ -257,6 +260,7 @@ def main():
 	create.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default="none", help="Morphology semantic review: none, generated Japanese, existing data translation, or auto")
 	create.add_argument("--require-semantic-feedback", action="store_true", help="Fail rows when the selected semantic-feedback source cannot be supplied")
 	create.add_argument("--constructions", action="store_true", help="Use curated NRDB constructional evidence during Japanese translation")
+	create.add_argument("--licensed", action="store_true", help="Use grammar-licensed generated forms as forward morphology evidence")
 	create.add_argument("--morphology-source", choices=["predict", "existing", "auto"], default="predict", help="Predict morphology, freeze existing morphology, or use existing when available")
 	create.add_argument("--needs", choices=["any", "annotation", "translation", "either", "both"], default="any", help="Select rows missing annotation, translation, either, both, or no missingness filter")
 	create.add_argument("--text-id", type=int, default=None, help="Restrict a text dataset to one internal text_id")
@@ -295,6 +299,7 @@ def main():
 	process.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default="none")
 	process.add_argument("--require-semantic-feedback", action="store_true")
 	process.add_argument("--constructions", action="store_true", help="Use curated NRDB constructional evidence during Japanese translation")
+	process.add_argument("--licensed", action="store_true", help="Use grammar-licensed generated forms as forward morphology evidence")
 	process.add_argument("--morphology-source", choices=["predict", "existing", "auto"], default="predict")
 	process.add_argument("--needs", choices=["any", "annotation", "translation", "either", "both"], default="any")
 	process.add_argument("--model", default="gpt-5.6")
@@ -358,12 +363,14 @@ def main():
 				semantic_feedback, require_semantic_feedback = _semantic_settings(args)
 			except ValueError as error:
 				parser.error(str(error))
+			if args.task == "reverse" and (args.constructions or args.licensed):
+				parser.error("--constructions and --licensed apply only to Miyako -> Japanese/forward morphology workflows")
 			start = end = None
 			if args.sentence_id: start, end = args.sentence_id
 			_print_json(nrdb.create_workflow_job(
 				args.dataset_id, args.task, args.limit, args.model, args.seed,
 				semantic_feedback=semantic_feedback, require_semantic_feedback=require_semantic_feedback,
-				use_constructions=args.constructions,
+				use_constructions=args.constructions, use_licensed_forms=args.licensed,
 				morphology_source=args.morphology_source, needs_filter=args.needs,
 				scope_text_id=args.text_id, scope_sentence_start=start, scope_sentence_end=end,
 			))
@@ -388,14 +395,15 @@ def main():
 			semantic_feedback, require_semantic_feedback = _semantic_settings(args)
 		except ValueError as error:
 			parser.error(str(error))
-		if args.task == "reverse" and args.constructions: parser.error("--constructions applies only to Miyako -> Japanese translation")
+		if args.task == "reverse" and (args.constructions or args.licensed): parser.error("--constructions and --licensed apply only to Miyako -> Japanese/forward morphology workflows")
 		display = (lambda _message: None) if args.json else WorkflowProgress(output_mode_from_args(args))
 		try:
 			value = process_dataset(
 				nrdb, args.input, args.task, model_name=args.model, component=args.component,
 				annotation_schema_id=args.annotation_schema_id, region=args.region, default_dialect_id=args.dialect_id,
 				semantic_feedback=semantic_feedback, require_semantic_feedback=require_semantic_feedback,
-				use_constructions=args.constructions, morphology_source=args.morphology_source, needs=args.needs,
+				use_constructions=args.constructions, use_licensed_forms=args.licensed,
+				morphology_source=args.morphology_source, needs=args.needs,
 				target_dialect_ids=args.dialects, id_model=args.id_model, surface_model=args.surface_model,
 				output=args.output, limit=args.limit, progress=display,
 			)
