@@ -8,6 +8,72 @@ SEMANTIC_FEEDBACK_MODES = {"none", "generated", "existing", "auto"}
 
 class TaskAwareAnnotationAgent(AnnotationAgentV9):
 	"""Expose orthogonal morphology, semantic feedback, and translation-output phases."""
+	# AnnotationAgentV9's optimized semantic-review loop is bounded separately
+	# from the forward annotation loop. Keep this explicit here because v8 exposes
+	# max_review_evidence_calls, not a max_review_rounds attribute.
+	max_review_rounds = 4
+
+	def _shared_evidence_compact(self):
+		"""Return the cached forward evidence in a compact JSON-safe review payload."""
+		lookup = []
+		for label, result in self._shared_evidence.get("lookup", {}).items():
+			lookup.append({"label": label, "result": self._compact_v9("lookup_id", result)})
+		corpus = []
+		for label, result in self._shared_evidence.get("corpus", {}).items():
+			corpus.append({"label": label, "result": self._compact_v9("corpus_examples", result)})
+		forms = []
+		for key, result in self._shared_evidence.get("form", {}).items():
+			surface, candidate = (key.split("\t", 1) + [""])[:2]
+			forms.append({
+				"surface": surface,
+				"candidate_id": candidate,
+				"result": self._compact_v9("form_id_support", result),
+			})
+		return {"lookup": lookup, "corpus": corpus, "form": forms}
+
+	def _review_query_already_known(self, name, arguments):
+		if name == "ground_lexical_ids":
+			labels = [str(value or "").strip() for value in arguments.get("labels", [])]
+			labels = [value for value in labels if value]
+			return bool(labels) and all(value in self._shared_evidence.get("lookup", {}) for value in labels)
+		if name == "corpus_examples":
+			label = str(arguments.get("label") or "").strip()
+			return bool(label) and label in self._shared_evidence.get("corpus", {})
+		if name == "form_id_support":
+			surface = str(arguments.get("surface") or "").strip()
+			candidate = str(arguments.get("candidate_id") or "").strip()
+			return bool(surface and candidate) and "{}\t{}".format(surface, candidate) in self._shared_evidence.get("form", {})
+		return False
+
+	def _v8_review_tool_result(self, name, arguments, item, schema_id):
+		"""Bridge v9's shared-evidence review onto the actual v8 review tool API."""
+		result = self._review_tool_result(name, arguments, item, schema_id)
+		if name == "corpus_examples":
+			label = str(arguments.get("label") or "").strip()
+			if label:
+				self._cache_corpus(label, result)
+		elif name == "form_id_support":
+			surface = str(arguments.get("surface") or "").strip()
+			candidate = str(arguments.get("candidate_id") or "").strip()
+			if surface and candidate:
+				self._cache_form(surface, candidate, result)
+		# ground_lexical_ids already populates the lookup cache through v9.
+		return result
+
+	def _compact_review_result(self, name, result):
+		return self._review_compact(name, result)
+
+	def _parse_review(self, text, _result=None):
+		# v9 historically passed the current analysis as a second argument; v8's
+		# parser correctly needs only the structured review text.
+		return super()._parse_review(text)
+
+	def _force_review_finalization(self, base_input, _result, reason):
+		self.progress("  review-v9: {}; forcing conservative finalization".format(reason))
+		# Reuse the proven v8 no-tools finalizer. It has the same review schema and
+		# conservative KEEP-unless-supported policy, and avoids another open-ended
+		# tool loop when v9 review evidence is exhausted.
+		return self._finalize_review(base_input, [])
 
 	def _apply_review(self, item, result, review, evidence_key):
 		result.setdefault("evidence", {})[evidence_key] = review
@@ -127,7 +193,7 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 				mode = "existing"
 				require = True
 			elif legacy == "use":
-				mode = "existing"
+				mode = "auto"
 			else:
 				mode = "none"
 		mode = str(mode)
