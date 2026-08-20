@@ -6,7 +6,8 @@
 2. **task/output**: `morph`, `translate`, `morph-translate`, or `reverse`;
 3. **semantic feedback for morphology**: `none`, `generated`, `existing`, or `auto`;
 4. **morphology source**: `predict`, `existing`, or `auto`;
-5. **selection/output**: NRDB scope/missingness or local TSV/JSON output.
+5. **constructional evidence for Japanese translation**: off by default, enabled with `--constructions`;
+6. **selection/output**: NRDB scope/missingness or local TSV/JSON output.
 
 The central rule is that **producing a Japanese translation and using Japanese as semantic feedback are different decisions**. A translation may be generated internally to review morphology without becoming an output, and a requested translation may be produced without reopening morphology.
 
@@ -22,6 +23,28 @@ The central rule is that **producing a Japanese translation and using Japanese a
 `--require-semantic-feedback` makes the selected source mandatory. It is most useful with `existing` when an experiment must contain only rows with human/gold Japanese translations.
 
 If generated semantic feedback revises morphology and Japanese translation is also a requested output, the final Japanese is regenerated from the revised morphology so annotation and translation cannot diverge.
+
+## Curated constructional evidence
+
+`--constructions` adds an explicit grammatical pass before Miyako -> Japanese generation. It is orthogonal to semantic feedback and morphology source.
+
+The NRDB table `annotation_constructions` stores schema/region/dialect-scoped rows with:
+
+- `trigger_id`: one exact atomic annotation ID used for cheap candidate retrieval;
+- `pattern`: a lightweight pattern over the frozen NRDB annotation;
+- `meaning_jp`: the construction-level Japanese interpretation;
+- `realization_jp`: a strong Japanese realization hint;
+- `note`, `priority`, and `enabled`.
+
+A trigger hit retrieves a **candidate construction only**. The translator must verify that the full pattern fits the frozen annotation before using it. When it fits, the curated construction meaning outranks a conflicting default atom-by-atom reading. This is especially useful for non-compositional Miyako grammatical sequences such as `V;cvb irr-neg`.
+
+The first resource is intentionally hand-curated and rerunnable from NRDB's:
+
+```text
+sql/constructions/miyako_translation.sql
+```
+
+No extra LLM tool round is spent on the construction pass: NRDB retrieves candidates deterministically before the first translation response. Retrieved construction candidates are preserved in translation evidence for audit.
 
 ## Task semantics
 
@@ -52,15 +75,21 @@ Produce Japanese from morphology.
 
 Semantic feedback remains independent. For example, `--task translate --morphology-source predict --semantic-feedback none` translates the final predicted morphology but does not use generated Japanese to revise it. `--semantic-feedback generated` performs the semantic review before producing the final translation.
 
+Add `--constructions` when curated constructional evidence should participate in Japanese interpretation:
+
+```bash
+nrdb-agent process data.xlsx --task translate --morphology-source existing --constructions
+```
+
 An existing human Japanese translation used as feedback is never exposed to the Japanese generation phase itself.
 
 ### `morph-translate`
 
-Produce both finalized morphology and Japanese. `--semantic-feedback none|generated|existing|auto` independently controls whether Japanese semantics may revise morphology.
+Produce both finalized morphology and Japanese. `--semantic-feedback none|generated|existing|auto` independently controls whether Japanese semantics may revise morphology. `--constructions` independently controls curated constructional evidence whenever Japanese is generated.
 
 ### `reverse`
 
-Japanese -> Miyako IDs -> Miyako surface realization. Semantic feedback is not applicable. `--dialects` / `--target-dialects` supplies ordered target-dialect preference. Existing `NRDB_ID_MODEL` and `NRDB_SURFACE_MODEL` critics remain available.
+Japanese -> Miyako IDs -> Miyako surface realization. Semantic feedback and `--constructions` are not applicable. `--dialects` / `--target-dialects` supplies ordered target-dialect preference. Existing `NRDB_ID_MODEL` and `NRDB_SURFACE_MODEL` critics remain available.
 
 ## Registered NRDB jobs
 
@@ -75,40 +104,17 @@ nrdb-agent create \
   --model gpt-5.6-terra
 ```
 
-Use existing human translations as morphology constraints, but do not generate translation output:
+Translate only from existing/gold morphology with constructional evidence:
 
 ```bash
 nrdb-agent create \
-  --dataset-id 21 \
-  --task morph \
-  --semantic-feedback existing \
-  --morphology-source predict
-```
-
-Require such translations:
-
-```bash
-nrdb-agent create \
-  --dataset-id 21 \
-  --task morph \
-  --semantic-feedback existing \
-  --require-semantic-feedback
-```
-
-Translate only from existing/gold morphology:
-
-```bash
-nrdb-agent create \
-  --dataset-id 21 \
+  --dataset-id 30 \
   --task translate \
   --morphology-source existing \
-  --semantic-feedback none
-```
-
-Select rows where annotation or translation is absent:
-
-```bash
-nrdb-agent create --dataset-id 21 --task morph-translate --needs either
+  --semantic-feedback none \
+  --constructions \
+  --needs translation \
+  --model gpt-5.6-terra
 ```
 
 Select one internal text from a text dataset:
@@ -116,6 +122,8 @@ Select one internal text from a text dataset:
 ```bash
 nrdb-agent create --dataset-id 31 --task morph --text-id 34
 ```
+
+`--text-id` means `texts_list.text_internal_id`, scoped by dataset; the database mapping to sentence rows is handled internally.
 
 Select an internal sentence/lxs ID interval:
 
@@ -139,127 +147,43 @@ nrdb-agent results JOB_ID --output results.tsv
 
 Portable workbooks are first-class inputs. `nrdb-agent` delegates workbook interpretation to `nrdb-morph.job.import_annotation_job`, so `_meta_`, `_cf_`, dialect resolution, annotation schema, region, enabled components, and existing morphology retain the same meaning as elsewhere in the NRDB suite.
 
-The active Python environment must contain the local `nrdb-morph` package.
-
-Morph all unannotated rows:
-
-```bash
-nrdb-agent process data.xlsx \
-  --task morph \
-  --semantic-feedback none \
-  --needs annotation \
-  --model gpt-5.6-terra \
-  --output analyzed.tsv
-```
-
-For a portable lexicon workbook with more than one annotation component, select it explicitly:
-
-```bash
-nrdb-agent process lexicon.xlsx --component lxs --task morph --output lxs.tsv
-```
-
-Translation only from existing morphology:
+Translation only from existing morphology with constructions:
 
 ```bash
 nrdb-agent process data.xlsx \
   --task translate \
   --morphology-source existing \
   --semantic-feedback none \
+  --constructions \
   --output translations.tsv
 ```
 
-## TSV
-
-TSV uses common aliases for the canonical fields. Supported aliases include:
-
-- source: `text`, `sentence_trsc2`, `trsc2`, `sentence`;
-- dialect: `dialect_id`, `target_dialect_id`;
-- segmentation: `segmented`, `sentence_trsc2_segmented`, `trsc2_seg`;
-- annotation: `annotation`, `sentence_annotation`, `annotation_r`;
-- Japanese: `translation_jp`, `translation`, `trsl`.
-
-Because TSV has no `_meta_`, schema and region are supplied explicitly; `--dialect` can provide a fallback when rows lack a dialect column.
-
-```bash
-nrdb-agent process input.tsv \
-  --task morph-translate \
-  --semantic-feedback generated \
-  --annotation-schema 2 \
-  --region 宮古 \
-  --dialect 19 \
-  --output output.tsv
-```
-
-The TSV output preserves original columns and appends:
-
-- `ai_segmented`
-- `ai_annotation`
-- `ai_translation`
-- `ai_decision`
-- `ai_confidence`
-- `ai_cost_usd`
-- `ai_model`
-- `ai_error`
-- `ai_evidence_json`
-
 ## Direct one-line demo
 
-Miyako -> Japanese defaults to the full demonstrated pipeline with **generated semantic feedback**:
+Miyako -> Japanese defaults to generated semantic feedback, while constructional evidence is opt-in. To isolate the construction effect, compare the same input with semantic feedback disabled in both runs:
 
 ```bash
-nrdb-agent translate 'aga za ndza...' \
+nrdb-agent translate 'SOURCE' \
   --target japanese \
   --annotation-schema 2 \
-  --region 宮古
+  --region 宮古 \
+  --model gpt-5.6-terra \
+  --semantic-feedback none
 ```
 
-This is equivalent to adding:
+versus:
 
 ```bash
---semantic-feedback generated
-```
-
-For ablations you can switch it off:
-
-```bash
---semantic-feedback none
-```
-
-or supply an existing translation strictly as morphology evidence:
-
-```bash
---semantic-feedback existing \
---existing-translation '東はどこにあるのか。'
-```
-
-The supplied existing translation is hidden from final Japanese generation.
-
-## Morph ceiling evaluation
-
-`nrdb-agent-morph-eval` supports the same semantic-feedback axis and durable checkpoints. To compare the three morphology conditions on the **same translation-present cohort**, keep run, model, seed, limit, and `--translation-filter present` fixed:
-
-```bash
-# A. Morph only
-nrdb-agent-morph-eval RUN \
+nrdb-agent translate 'SOURCE' \
+  --target japanese \
+  --annotation-schema 2 \
+  --region 宮古 \
+  --model gpt-5.6-terra \
   --semantic-feedback none \
-  --translation-filter present \
-  --seed 4 --limit 20 --output eval_none.tsv
-
-# B. Generated Japanese semantic feedback
-nrdb-agent-morph-eval RUN \
-  --semantic-feedback generated \
-  --translation-filter present \
-  --seed 4 --limit 20 --output eval_generated.tsv
-
-# C. Existing human/data translation semantic feedback
-nrdb-agent-morph-eval RUN \
-  --semantic-feedback existing \
-  --require-semantic-feedback \
-  --translation-filter present \
-  --seed 4 --limit 20 --output eval_existing.tsv
+  --constructions
 ```
 
-`--translation-filter any|present|absent` is independent of semantic feedback. It exists so ablation conditions can be evaluated on identical cohorts. Checkpoint metadata includes both controls, preventing accidental cross-condition resume.
+With `--verbose`, construction-aware runs report `translation-v7: construction pass candidates=N`.
 
 ## Missingness filters
 
@@ -271,8 +195,6 @@ nrdb-agent-morph-eval RUN \
 - `either`: at least one absent;
 - `both`: both absent.
 
-For NRDB text datasets `--text-id` refers to `text_sentence_meta.text_id`. `--sentence-id` refers to the internal `ex_sen_lx.id` and therefore works for sentence and lxs rows as well as text utterances.
-
 ## Legacy jobs
 
-The old `--mode blind_gold|unannotated`, `--prompt-version`, `--translate`, `--blind-translation`, and hidden `--translation-evidence` compatibility path remain accepted. New workflows should use `--semantic-feedback` explicitly.
+The old `--mode blind_gold|unannotated`, `--prompt-version`, `--translate`, `--blind-translation`, and hidden `--translation-evidence` compatibility path remain accepted. New workflows should use the orthogonal controls explicitly.
