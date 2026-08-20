@@ -10,6 +10,7 @@ class NrdbClient:
 		self.workflow_url = os.environ.get("NRDB_AGENT_WORKFLOW_URL") or base_url + "/agent_workflow.php"
 		self.evidence_url = os.environ.get("NRDB_AGENT_EVIDENCE_URL") or base_url + "/agent_evidence.php"
 		self.constructions_url = os.environ.get("NRDB_AGENT_CONSTRUCTIONS_URL") or base_url + "/agent_constructions.php"
+		self.licensed_forms_url = os.environ.get("NRDB_AGENT_LICENSED_FORMS_URL") or base_url + "/agent_licensed_forms.php"
 		self.results_url = os.environ.get("NRDB_AGENT_RESULTS_URL") or base_url + "/agent_results.php"
 		self.morph_eval_url = os.environ.get("NRDB_AGENT_MORPH_EVAL_URL") or base_url + "/agent_morph_eval.php"
 		self.form_support_url = os.environ.get("NRDB_AGENT_FORM_SUPPORT_URL") or base_url + "/agent_form_support.php"
@@ -155,6 +156,17 @@ class NrdbClient:
 		})
 		if not payload.get("success"):
 			raise RuntimeError(payload.get("error") or "NRDB construction lookup failed")
+		return payload
+
+	def licensed_forms_in_text(self, text, annotation_schema_id, region, dialect_id):
+		payload = self.http.get(self.licensed_forms_url, {
+			"text": str(text or "").strip(),
+			"annotation_schema_id": int(annotation_schema_id),
+			"region": str(region or "").strip(),
+			"dialect_id": int(dialect_id),
+		})
+		if not payload.get("success"):
+			raise RuntimeError(payload.get("error") or "NRDB licensed-form lookup failed")
 		return payload
 
 	def examples(self, label, annotation_schema_id, exclude_sentence_id, limit=12, exclude_job_id=None):
