@@ -6,11 +6,11 @@ from pathlib import Path
 from .dataset_io import write_json, write_tsv
 from .metrics import annotation_metrics, segmentation_metrics
 from .morph_eval import _paired_summary, _result_row, _run_contract
-from .task_agent import TaskAwareAnnotationAgent
+from .task_agent import SEMANTIC_FEEDBACK_MODES, TaskAwareAnnotationAgent
 from .usage import UsageTracker, tracked_client
 
 
-CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v1"
+CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v2"
 
 
 def _canonical_path(value):
@@ -66,7 +66,7 @@ def _load_checkpoint(path):
 	return meta, rows
 
 
-def _build_cohort(nrdb, contract, dataset_ids, limit, seed):
+def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback, require_semantic_feedback):
 	run_dataset_ids = set(contract["dataset_ids"])
 	if dataset_ids:
 		selected_dataset_ids = {int(value) for value in dataset_ids}
@@ -86,6 +86,8 @@ def _build_cohort(nrdb, contract, dataset_ids, limit, seed):
 		identity = (int(row["dataset_id"]), example_id)
 		if identity in contract["train_identities"]:
 			continue
+		if semantic_feedback == "existing" and require_semantic_feedback and not str(row.get("translation_jp") or "").strip():
+			continue
 		eligible.append(row)
 	eligible_pool_size = len(eligible)
 	rng = random.Random(int(seed))
@@ -103,7 +105,8 @@ def _build_cohort(nrdb, contract, dataset_ids, limit, seed):
 	}
 
 
-def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_model, id_model):
+def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_model, id_model,
+	semantic_feedback, require_semantic_feedback):
 	return {
 		"record_type": "meta",
 		"format": CHECKPOINT_FORMAT,
@@ -116,6 +119,8 @@ def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_m
 		"agent_model": str(model_name),
 		"expected_morph_model": str(expected_morph_model or ""),
 		"id_model": _canonical_path(id_model),
+		"semantic_feedback": str(semantic_feedback),
+		"require_semantic_feedback": bool(require_semantic_feedback),
 	}
 
 
@@ -125,6 +130,7 @@ def _verify_checkpoint(expected, actual):
 	for key in (
 		"format", "morph_run", "train_path", "datasets", "cohort_sentence_ids",
 		"limit", "seed", "agent_model", "expected_morph_model", "id_model",
+		"semantic_feedback", "require_semantic_feedback",
 	):
 		if actual.get(key) != expected.get(key):
 			raise ValueError("checkpoint does not match this evaluation: {} differs".format(key))
@@ -132,12 +138,19 @@ def _verify_checkpoint(expected, actual):
 
 def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=None, seed=1,
 	dataset_ids=None, expected_morph_model=None, id_model=None, output=None, checkpoint=None,
-	resume=False, openai_client=None, progress=print):
+	resume=False, semantic_feedback="none", require_semantic_feedback=False,
+	openai_client=None, progress=print):
+	semantic_feedback = str(semantic_feedback or "none")
+	if semantic_feedback not in SEMANTIC_FEEDBACK_MODES:
+		raise ValueError("invalid semantic_feedback: {}".format(semantic_feedback))
 	contract = _run_contract(run_dir)
-	cohort = _build_cohort(nrdb, contract, dataset_ids, limit, seed)
+	cohort = _build_cohort(
+		nrdb, contract, dataset_ids, limit, seed, semantic_feedback, require_semantic_feedback,
+	)
 	checkpoint_path = _checkpoint_path(output=output, checkpoint=checkpoint)
 	expected_meta = _checkpoint_meta(
 		contract, cohort, model_name, limit, seed, expected_morph_model, id_model,
+		semantic_feedback, require_semantic_feedback,
 	)
 
 	existing_meta, existing_rows = _load_checkpoint(checkpoint_path)
@@ -176,19 +189,21 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		baseline_seg = segmentation_metrics(baseline.get("segmented"), source["gold_segmented"])
 		tracker = UsageTracker()
 		client = tracked_client(openai_client, tracker)
+		existing_translation = str(source.get("translation_jp") or "").strip()
 		item = {
 			"sentence_id": sentence_id,
 			"dialect_id": int(source["dialect_id"]),
 			"dialect_region": source.get("dialect_region") or "",
 			"text": source["text"],
-			"translation_jp": None,
+			"translation_jp": existing_translation if semantic_feedback in {"existing", "auto"} else None,
 		}
 		job = {
 			"annotation_schema_id": int(source["annotation_schema_id"]),
 			"model_name": model_name,
 			"prompt_version": "annotation-v9",
 			"task": "morph",
-			"translation_evidence": "ignore",
+			"semantic_feedback": semantic_feedback,
+			"require_semantic_feedback": bool(require_semantic_feedback),
 			"morphology_source": "predict",
 			"produce_translation": False,
 			"blind_translation": False,
@@ -199,6 +214,8 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		agent_metrics = annotation_metrics(agent_result.get("annotation"), source["gold_annotation"])
 		agent_seg = segmentation_metrics(agent_result.get("segmented"), source["gold_segmented"])
 		row = _result_row(source, baseline, agent_result, usage, baseline_metrics, agent_metrics, baseline_seg, agent_seg)
+		row["semantic_feedback"] = semantic_feedback
+		row["existing_translation_present"] = int(bool(existing_translation))
 
 		# Durable checkpoint BEFORE moving to the next paid row.
 		_append_jsonl(checkpoint_path, {"record_type": "row", "row": row})
@@ -219,7 +236,7 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 	total_cost = sum(float(row.get("agent_cost_usd") or 0.0) for row in results)
 	pricing_complete = all(bool(row.get("agent_pricing_complete")) for row in results)
 	summary.update({
-		"format": "nrdb-agent.morph-ceiling-eval.v3",
+		"format": "nrdb-agent.morph-ceiling-eval.v4",
 		"morph_run": contract["run_dir"],
 		"train_rows": contract["train_rows"],
 		"train_rows_missing_identity": contract["train_rows_missing_identity"],
@@ -232,6 +249,8 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		"morph_model_ids": morph_model_ids,
 		"expected_morph_model": expected_morph_model,
 		"agent_model": model_name,
+		"semantic_feedback": semantic_feedback,
+		"require_semantic_feedback": bool(require_semantic_feedback),
 		"estimated_cost_usd": total_cost,
 		"pricing_complete": pricing_complete,
 		"checkpoint": str(checkpoint_path),
