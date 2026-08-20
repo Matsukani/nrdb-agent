@@ -315,6 +315,7 @@ def main():
 	translate.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default=None, help="For Miyako→Japanese, default is generated; for Japanese→Miyako, semantic feedback is not used")
 	translate.add_argument("--require-semantic-feedback", action="store_true")
 	translate.add_argument("--constructions", action="store_true", help="Use curated NRDB constructional evidence before Japanese translation")
+	translate.add_argument("--licensed", action="store_true", help="Use grammar-licensed generated forms as forward morphology evidence")
 	translate.add_argument("--existing-translation", default=None, help="Existing Japanese translation used only when semantic feedback is existing/auto; never exposed to output generation")
 	translate.add_argument("--surface-model", default=None)
 	translate.add_argument("--model", default="gpt-5.6")
@@ -406,12 +407,13 @@ def main():
 		if args.json and _explicit_output_mode(args): parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
 		semantic_feedback = args.semantic_feedback
 		if semantic_feedback is None: semantic_feedback = "generated" if args.target == "japanese" else "none"
-		if args.target == "miyako" and (semantic_feedback != "none" or args.require_semantic_feedback or args.existing_translation or args.constructions):
-			parser.error("semantic feedback and constructions are only applicable to direct Miyako -> Japanese translation")
+		if args.target == "miyako" and (semantic_feedback != "none" or args.require_semantic_feedback or args.existing_translation or args.constructions or args.licensed):
+			parser.error("semantic feedback, constructions and licensed forms are only applicable to direct Miyako -> Japanese translation")
 		kwargs = dict(
 			dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
 			semantic_feedback=semantic_feedback, require_semantic_feedback=args.require_semantic_feedback,
-			use_constructions=args.constructions, existing_translation=args.existing_translation,
+			use_constructions=args.constructions, use_licensed_forms=args.licensed,
+			existing_translation=args.existing_translation,
 		)
 		if args.json:
 			value = translate_text(nrdb, args.text, args.target, args.annotation_schema_id, args.region, progress=lambda _message: None, **kwargs)
