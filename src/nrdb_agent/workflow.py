@@ -1,22 +1,38 @@
-import json
 import os
 
 from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
-from .task_agent import TaskAwareAnnotationAgent
+from .task_agent import SEMANTIC_FEEDBACK_MODES, TaskAwareAnnotationAgent
 from .usage import UsageTracker, tracked_client
 
 
 TASKS = {"morph", "translate", "morph-translate", "reverse"}
-TRANSLATION_EVIDENCE_POLICIES = {"ignore", "use", "required"}
 MORPHOLOGY_SOURCES = {"predict", "existing", "auto"}
+LEGACY_TRANSLATION_EVIDENCE = {"ignore", "use", "required"}
 
 
 def _existing_morphology(item):
 	segmented = str(item.get("existing_segmented") or item.get("segmented") or "").strip()
 	annotation = str(item.get("existing_annotation") or item.get("annotation") or "").strip()
 	return segmented, annotation
+
+
+def _semantic_feedback(semantic_feedback=None, require_semantic_feedback=False, translation_evidence=None):
+	"""Normalize new semantic feedback controls while accepting legacy callers."""
+	if semantic_feedback is None:
+		legacy = str(translation_evidence or "ignore")
+		if legacy not in LEGACY_TRANSLATION_EVIDENCE:
+			raise ValueError("invalid legacy translation_evidence: {}".format(legacy))
+		if legacy == "required":
+			return "existing", True
+		if legacy == "use":
+			return "existing", bool(require_semantic_feedback)
+		return "none", bool(require_semantic_feedback)
+	mode = str(semantic_feedback or "none")
+	if mode not in SEMANTIC_FEEDBACK_MODES:
+		raise ValueError("invalid semantic_feedback: {}".format(mode))
+	return mode, bool(require_semantic_feedback)
 
 
 def _usage_cost(usage):
@@ -49,15 +65,16 @@ def _job_summary(progress, completed, total, cost, failed, pricing_complete):
 
 
 def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt-5.6",
-	translation_evidence="ignore", morphology_source="predict", target_dialect_ids=None,
-	id_model=None, surface_model=None, openai_client=None, progress=print):
+	semantic_feedback=None, require_semantic_feedback=False, morphology_source="predict",
+	target_dialect_ids=None, id_model=None, surface_model=None, openai_client=None,
+	progress=print, translation_evidence=None):
 	task = str(task or "morph")
-	translation_evidence = str(translation_evidence or "ignore")
 	morphology_source = str(morphology_source or "predict")
+	semantic_feedback, require_semantic_feedback = _semantic_feedback(
+		semantic_feedback, require_semantic_feedback, translation_evidence,
+	)
 	if task not in TASKS:
 		raise ValueError("invalid task: {}".format(task))
-	if translation_evidence not in TRANSLATION_EVIDENCE_POLICIES:
-		raise ValueError("invalid translation_evidence: {}".format(translation_evidence))
 	if morphology_source not in MORPHOLOGY_SOURCES:
 		raise ValueError("invalid morphology_source: {}".format(morphology_source))
 
@@ -76,6 +93,8 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 	client = tracked_client(openai_client, tracker)
 
 	if task == "reverse":
+		if semantic_feedback != "none" or require_semantic_feedback:
+			raise ValueError("semantic feedback is not used for reverse tasks")
 		japanese = str(item.get("translation_jp") or item.get("translation") or item.get("japanese") or text or "").strip()
 		if not japanese:
 			raise ValueError("reverse task requires Japanese input")
@@ -111,18 +130,19 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		raise ValueError("morphology_source=existing requires segmentation and annotation")
 
 	human_translation = str(item.get("translation_jp") or item.get("translation") or "").strip()
-	if translation_evidence == "required" and task in {"morph", "morph-translate"} and not human_translation:
-		raise ValueError("translation_evidence=required but this item has no human translation")
+	if semantic_feedback == "existing" and require_semantic_feedback and not human_translation and not use_existing:
+		raise ValueError("semantic_feedback=existing is required but this item has no existing translation")
 
 	forward_item = {
 		"sentence_id": int(item.get("sentence_id") or item.get("row_id") or 0),
 		"dialect_id": dialect_id, "dialect_region": region, "text": text,
-		"translation_jp": human_translation if translation_evidence in {"use", "required"} else None,
+		"translation_jp": human_translation if semantic_feedback in {"existing", "auto"} else None,
 	}
 	job = {
 		"annotation_schema_id": annotation_schema_id, "model_name": model_name,
 		"prompt_version": "annotation-v9", "task": task,
-		"translation_evidence": translation_evidence,
+		"semantic_feedback": semantic_feedback,
+		"require_semantic_feedback": require_semantic_feedback,
 		"morphology_source": morphology_source,
 		"produce_translation": task in {"translate", "morph-translate"},
 		"blind_translation": False,
@@ -130,6 +150,8 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 	agent = TaskAwareAnnotationAgent(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
 
 	if use_existing:
+		# Existing morphology is explicitly frozen. Semantic feedback is meaningful
+		# only while predicted morphology is still reviewable.
 		if task == "morph":
 			result = {
 				"segmented": segmented, "annotation": annotation, "trsl_ai": "",
@@ -149,6 +171,7 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		"translation": result.get("trsl_ai", ""), "decision": result.get("decision"),
 		"confidence": result.get("confidence"), "evidence": result.get("evidence", {}),
 		"api_usage": usage, "estimated_cost_usd": _usage_cost(usage), "model": model_name,
+		"semantic_feedback": semantic_feedback,
 	}
 
 
@@ -172,7 +195,9 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 			item = dict(raw)
 			result = execute_item(
 				nrdb, item, job["task"], job["annotation_schema_id"], item.get("dialect_region"),
-				model_name=job["model_name"], translation_evidence=job.get("translation_evidence") or "ignore",
+				model_name=job["model_name"], semantic_feedback=job.get("semantic_feedback"),
+				require_semantic_feedback=bool(job.get("require_semantic_feedback")),
+				translation_evidence=job.get("translation_evidence"),
 				morphology_source=job.get("morphology_source") or "predict",
 				target_dialect_ids=target_dialects, id_model=id_model, surface_model=surface_model,
 				openai_client=openai_client, progress=progress,
@@ -196,7 +221,9 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 		summary = nrdb.summary(job_id)
 		if isinstance(summary, dict):
 			summary["workflow"] = {
-				"task": job["task"], "completed": completed, "failed": failed,
+				"task": job["task"], "semantic_feedback": job.get("semantic_feedback"),
+				"require_semantic_feedback": bool(job.get("require_semantic_feedback")),
+				"completed": completed, "failed": failed,
 				"estimated_cost_usd": cost, "pricing_complete": pricing_complete,
 			}
 		return summary
