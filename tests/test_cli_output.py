@@ -1,5 +1,6 @@
 from io import StringIO
 
+from nrdb_agent import cli_output
 from nrdb_agent.cli_output import TranslationProgress, WorkflowProgress, estimated_cost_text, format_elapsed, silent_translation_line
 
 
@@ -22,6 +23,19 @@ def test_elapsed_formatting():
 	assert format_elapsed(12.34) == "12.3s"
 	assert format_elapsed(62) == "1m02s"
 	assert format_elapsed(3661) == "1h01m01s"
+
+
+def test_one_off_translation_reports_observed_cost_and_elapsed_time(monkeypatch):
+	clock = iter([100.0, 112.3])
+	monkeypatch.setattr(cli_output.time, "monotonic", lambda: next(clock))
+	stream = StringIO()
+	progress = TranslationProgress("quiet", stream=stream, progress_stream=StringIO())
+	progress.start()
+	progress("  API usage: requests=6 input=100 cached=20 output=30 reasoning=10 estimated_cost=$0.0529")
+	progress.stop()
+	value = stream.getvalue()
+	assert "API usage:" in value
+	assert "complete | $0.0529 | 12.3s" in value
 
 
 def test_default_progress_is_quiet_and_keeps_only_major_milestones():
@@ -81,7 +95,7 @@ def test_workflow_progress_streams_translation_cost_and_elapsed_time():
 	progress.job_summary(100, 100, 0.8427, failed=0, pricing_complete=True)
 	value = stream.getvalue()
 	assert "[2/100] 東はどこにあるのか。 ($0.0901 | " in value
-	assert "100/100 completed | failed=0 | estimated total $0.8427 | elapsed " in value
+	assert "100/100 completed | failed=0 | estimated total $0.8427 | " in value
 
 
 def test_compact_workflow_result_shows_source_then_translation_cost_and_time():
