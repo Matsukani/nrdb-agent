@@ -10,7 +10,7 @@ from .task_agent import SEMANTIC_FEEDBACK_MODES, TaskAwareAnnotationAgent
 from .usage import UsageTracker, tracked_client
 
 
-CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v3"
+CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v4"
 TRANSLATION_FILTERS = {"any", "present", "absent"}
 
 
@@ -66,7 +66,7 @@ def _load_checkpoint(path):
 
 
 def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
-	require_semantic_feedback, translation_filter):
+	require_semantic_feedback, translation_filter, text_internal_id=None):
 	run_dataset_ids = set(contract["dataset_ids"])
 	if dataset_ids:
 		selected_dataset_ids = {int(value) for value in dataset_ids}
@@ -75,7 +75,9 @@ def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
 			raise ValueError("dataset IDs are not represented in train.jsonl: {}".format(", ".join(map(str, unknown))))
 	else:
 		selected_dataset_ids = run_dataset_ids
-	registered = nrdb.morph_eval_rows(selected_dataset_ids)
+	if text_internal_id is not None and len(selected_dataset_ids) != 1:
+		raise ValueError("text_internal_id requires exactly one selected dataset")
+	registered = nrdb.morph_eval_rows(selected_dataset_ids, text_internal_id=text_internal_id)
 	eligible = []
 	unmatched_identity = 0
 	for row in registered:
@@ -95,8 +97,11 @@ def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
 			continue
 		eligible.append(row)
 	eligible_pool_size = len(eligible)
-	rng = random.Random(int(seed))
-	rng.shuffle(eligible)
+	# Explicit text scope is already a meaningful deterministic cohort; preserve
+	# its database order unless a limit is deliberately applied.
+	if text_internal_id is None:
+		rng = random.Random(int(seed))
+		rng.shuffle(eligible)
 	if limit is not None:
 		eligible = eligible[:max(0, int(limit))]
 	if not eligible:
@@ -107,6 +112,7 @@ def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
 		"registered_gold_rows": len(registered),
 		"eligible_pool_size": eligible_pool_size,
 		"unmatched_identity": unmatched_identity,
+		"text_internal_id": None if text_internal_id is None else int(text_internal_id),
 	}
 
 
@@ -118,6 +124,7 @@ def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_m
 		"morph_run": _canonical_path(contract["run_dir"]),
 		"train_path": _canonical_path(contract["train_path"]),
 		"datasets": cohort["dataset_ids"],
+		"text_internal_id": cohort.get("text_internal_id"),
 		"cohort_sentence_ids": [int(row["sentence_id"]) for row in cohort["rows"]],
 		"limit": None if limit is None else int(limit),
 		"seed": int(seed),
@@ -134,7 +141,7 @@ def _verify_checkpoint(expected, actual):
 	if not actual:
 		raise ValueError("checkpoint has no metadata record")
 	for key in (
-		"format", "morph_run", "train_path", "datasets", "cohort_sentence_ids",
+		"format", "morph_run", "train_path", "datasets", "text_internal_id", "cohort_sentence_ids",
 		"limit", "seed", "agent_model", "expected_morph_model", "id_model",
 		"semantic_feedback", "require_semantic_feedback", "translation_filter",
 	):
@@ -145,7 +152,7 @@ def _verify_checkpoint(expected, actual):
 def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=None, seed=1,
 	dataset_ids=None, expected_morph_model=None, id_model=None, output=None, checkpoint=None,
 	resume=False, semantic_feedback="none", require_semantic_feedback=False,
-	translation_filter="any", openai_client=None, progress=print):
+	translation_filter="any", text_internal_id=None, openai_client=None, progress=print):
 	semantic_feedback = str(semantic_feedback or "none")
 	translation_filter = str(translation_filter or "any")
 	if semantic_feedback not in SEMANTIC_FEEDBACK_MODES:
@@ -154,10 +161,14 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		raise ValueError("invalid translation_filter: {}".format(translation_filter))
 	if require_semantic_feedback and semantic_feedback == "none":
 		raise ValueError("require_semantic_feedback cannot be used with semantic_feedback=none")
+	if text_internal_id is not None:
+		text_internal_id = int(text_internal_id)
+		if text_internal_id < 1:
+			raise ValueError("text_internal_id must be positive")
 	contract = _run_contract(run_dir)
 	cohort = _build_cohort(
 		nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
-		require_semantic_feedback, translation_filter,
+		require_semantic_feedback, translation_filter, text_internal_id=text_internal_id,
 	)
 	checkpoint_path = _checkpoint_path(output=output, checkpoint=checkpoint)
 	expected_meta = _checkpoint_meta(
@@ -228,6 +239,7 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		row = _result_row(source, baseline, agent_result, usage, baseline_metrics, agent_metrics, baseline_seg, agent_seg)
 		row["semantic_feedback"] = semantic_feedback
 		row["existing_translation_present"] = int(bool(existing_translation))
+		row["internal_text_id"] = source.get("internal_text_id") or ""
 
 		_append_jsonl(checkpoint_path, {"record_type": "row", "row": row})
 		results.append(row)
@@ -246,11 +258,12 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 	total_cost = sum(float(row.get("agent_cost_usd") or 0.0) for row in results)
 	pricing_complete = all(bool(row.get("agent_pricing_complete")) for row in results)
 	summary.update({
-		"format": "nrdb-agent.morph-ceiling-eval.v5",
+		"format": "nrdb-agent.morph-ceiling-eval.v6",
 		"morph_run": contract["run_dir"],
 		"train_rows": contract["train_rows"],
 		"train_rows_missing_identity": contract["train_rows_missing_identity"],
 		"datasets": cohort["dataset_ids"],
+		"text_internal_id": cohort.get("text_internal_id"),
 		"registered_gold_rows": cohort["registered_gold_rows"],
 		"eligible_pool_after_train_exclusion": cohort["eligible_pool_size"],
 		"sampled_rows": len(cohort["rows"]),
