@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from nrdb_agent.morph_eval_resumable import CHECKPOINT_FORMAT, _load_checkpoint, _verify_checkpoint
+from nrdb_agent.morph_eval_resumable import CHECKPOINT_FORMAT, _load_checkpoint, _normalize_evidence_scope, _verify_checkpoint
 from nrdb_agent.task_agent import TaskAwareAnnotationAgent
 
 
@@ -49,6 +49,7 @@ def _meta(**values):
 		"semantic_feedback": "none",
 		"require_semantic_feedback": False,
 		"translation_filter": "any",
+		"evidence_exclusion": {"datasets": [], "texts": [], "sentence_ranges": []},
 	}
 	base.update(values)
 	return base
@@ -83,3 +84,26 @@ def test_checkpoint_internal_text_scope_is_part_of_experiment_identity():
 	actual = _meta(text_internal_id=51)
 	with pytest.raises(ValueError, match="text_internal_id differs"):
 		_verify_checkpoint(expected, actual)
+
+
+def test_explicit_text_scope_is_automatically_excluded_from_evidence():
+	scope = _normalize_evidence_scope(auto_text=(21, 50))
+	assert scope == {"datasets": [], "texts": [[21, 50]], "sentence_ranges": []}
+
+
+def test_evidence_exclusion_is_part_of_checkpoint_identity():
+	expected = _meta(evidence_exclusion={"datasets": [], "texts": [[21, 50]], "sentence_ranges": []})
+	actual = _meta(evidence_exclusion={"datasets": [], "texts": [], "sentence_ranges": []})
+	with pytest.raises(ValueError, match="evidence_exclusion differs"):
+		_verify_checkpoint(expected, actual)
+
+
+def test_evidence_scope_combines_dataset_text_and_ranges():
+	scope = _normalize_evidence_scope(
+		datasets=[30, 30], texts=[(21, 50)], sentence_ranges=[(31, 12, 21)], auto_text=(21, 50),
+	)
+	assert scope == {
+		"datasets": [30],
+		"texts": [[21, 50]],
+		"sentence_ranges": [[31, 12, 21]],
+	}
