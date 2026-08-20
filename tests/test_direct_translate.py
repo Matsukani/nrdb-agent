@@ -45,6 +45,12 @@ class FakeForwardAgent:
 		}
 
 
+class ConstructionAwareForwardAgent(FakeForwardAgent):
+	def annotate(self, item, job, morph):
+		assert job["use_constructions"] is True
+		return super().annotate(item, job, morph)
+
+
 class FlakyForwardAgent(FakeForwardAgent):
 	attempts = 0
 
@@ -69,7 +75,7 @@ class FakeReverseAgent:
 
 
 def test_direct_miyako_to_japanese_uses_region_dialect_morph_service_and_provenance(monkeypatch):
-	monkeypatch.setattr(translate_module, "AnnotationAgentV9", FakeForwardAgent)
+	monkeypatch.setattr(translate_module, "TaskAwareAnnotationAgent", FakeForwardAgent)
 	nrdb = FakeNrdb()
 	messages = []
 	result = translate_module.translate_text(nrdb, "mija", "japanese", 2, "宮古", progress=messages.append)
@@ -77,13 +83,24 @@ def test_direct_miyako_to_japanese_uses_region_dialect_morph_service_and_provena
 	assert result["translation"] == "見るよ。"
 	assert result["morph_dialect_id"] == 22
 	assert result["morph_inference"]["model_id"] == "miyako-65k-hybrid-shared-v002"
+	assert result["use_constructions"] is False
 	assert any("miyako-65k-hybrid-shared-v002" in message and "top-k=5" in message for message in messages)
 	assert nrdb.exclude_job_id == 0
 
 
+def test_direct_miyako_to_japanese_threads_construction_flag(monkeypatch):
+	monkeypatch.setattr(translate_module, "TaskAwareAnnotationAgent", ConstructionAwareForwardAgent)
+	nrdb = FakeNrdb()
+	result = translate_module.translate_text(
+		nrdb, "mija", "japanese", 2, "宮古", use_constructions=True, progress=lambda _: None,
+	)
+	assert result["translation"] == "見るよ。"
+	assert result["use_constructions"] is True
+
+
 def test_direct_translation_retries_malformed_tool_json(monkeypatch):
 	FlakyForwardAgent.attempts = 0
-	monkeypatch.setattr(translate_module, "AnnotationAgentV9", FlakyForwardAgent)
+	monkeypatch.setattr(translate_module, "TaskAwareAnnotationAgent", FlakyForwardAgent)
 	nrdb = FakeNrdb()
 	messages = []
 	result = translate_module.translate_text(nrdb, "mija", "japanese", 2, "宮古", progress=messages.append)
