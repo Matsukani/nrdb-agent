@@ -17,6 +17,9 @@ from .translate import translate_text
 from .workflow import run_workflow_job
 
 
+SEMANTIC_FEEDBACK_CHOICES = ["none", "generated", "existing", "auto"]
+
+
 def _print_json(value):
 	print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
@@ -83,6 +86,21 @@ def _parse_sentence_range(value):
 	if start < 1 or end < start:
 		raise argparse.ArgumentTypeError("sentence scope must use positive IDs with END >= START")
 	return (start, end)
+
+
+def _semantic_settings(args):
+	mode = str(getattr(args, "semantic_feedback", None) or "none")
+	require = bool(getattr(args, "require_semantic_feedback", False))
+	legacy = getattr(args, "translation_evidence", None)
+	if legacy is not None:
+		if mode != "none" or require:
+			raise ValueError("--translation-evidence cannot be combined with --semantic-feedback or --require-semantic-feedback")
+		if legacy == "required":
+			return "existing", True
+		if legacy == "use":
+			return "existing", False
+		return "none", False
+	return mode, require
 
 
 def _print_results(payload, show_sentences=0):
@@ -198,7 +216,8 @@ def main():
 	create = sub.add_parser("create", help="Create a scoped NRDB morphology/translation job")
 	create.add_argument("--dataset-id", type=int, required=True)
 	create.add_argument("--task", choices=["morph", "translate", "morph-translate", "reverse"], default="morph")
-	create.add_argument("--translation-evidence", choices=["ignore", "use", "required"], default="ignore", help="How an existing human Japanese translation may constrain morphology")
+	create.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default="none", help="Morphology semantic review: none, generated Japanese, existing data translation, or auto")
+	create.add_argument("--require-semantic-feedback", action="store_true", help="Fail rows when the selected semantic-feedback source cannot be supplied")
 	create.add_argument("--morphology-source", choices=["predict", "existing", "auto"], default="predict", help="Predict morphology, freeze existing morphology, or use existing when available")
 	create.add_argument("--needs", choices=["any", "annotation", "translation", "either", "both"], default="any", help="Select rows missing annotation, translation, either, both, or no missingness filter")
 	create.add_argument("--text-id", type=int, default=None, help="Restrict a text dataset to one internal text_id")
@@ -206,6 +225,7 @@ def main():
 	create.add_argument("--limit", type=int, default=100)
 	create.add_argument("--seed", type=int, default=1)
 	create.add_argument("--model", default="gpt-5.6")
+	create.add_argument("--translation-evidence", choices=["ignore", "use", "required"], default=None, help=argparse.SUPPRESS)
 	create.add_argument("--mode", choices=["blind_gold", "unannotated"], default=None, help=argparse.SUPPRESS)
 	create.add_argument("--prompt-version", choices=["annotation-v1", "annotation-v2", "annotation-v3", "annotation-v4", "annotation-v5", "annotation-v6", "annotation-v7", "annotation-v8", "annotation-v9", "reverse-v1"], default=None, help=argparse.SUPPRESS)
 	create.add_argument("--translate", action="store_true", help=argparse.SUPPRESS)
@@ -230,7 +250,8 @@ def main():
 	process.add_argument("--region", default=None, help="Required for TSV; XLSX reads _meta_")
 	process.add_argument("--dialect", dest="dialect_id", type=int, default=None, help="Fallback dialect_id for TSV rows without one")
 	process.add_argument("--dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...", help="Ordered target dialects for reverse")
-	process.add_argument("--translation-evidence", choices=["ignore", "use", "required"], default="ignore")
+	process.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default="none")
+	process.add_argument("--require-semantic-feedback", action="store_true")
 	process.add_argument("--morphology-source", choices=["predict", "existing", "auto"], default="predict")
 	process.add_argument("--needs", choices=["any", "annotation", "translation", "either", "both"], default="any")
 	process.add_argument("--model", default="gpt-5.6")
@@ -239,6 +260,7 @@ def main():
 	process.add_argument("--limit", type=int, default=None)
 	process.add_argument("--output", default=None, help="Write .tsv (default by extension) or .json")
 	process.add_argument("--json", action="store_true", help="Suppress terminal progress and print the complete batch result JSON")
+	process.add_argument("--translation-evidence", choices=["ignore", "use", "required"], default=None, help=argparse.SUPPRESS)
 	add_output_mode_args(process)
 
 	translate = sub.add_parser("translate", help="Translate arbitrary Miyako or Japanese text without creating a job")
@@ -247,6 +269,9 @@ def main():
 	translate.add_argument("--annotation-schema", dest="annotation_schema_id", type=int, required=True)
 	translate.add_argument("--region", required=True)
 	translate.add_argument("--dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...")
+	translate.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default=None, help="For Miyako→Japanese, default is generated; for Japanese→Miyako, semantic feedback is not used")
+	translate.add_argument("--require-semantic-feedback", action="store_true")
+	translate.add_argument("--existing-translation", default=None, help="Existing Japanese translation used only when semantic feedback is existing/auto; never exposed to output generation")
 	translate.add_argument("--surface-model", default=None)
 	translate.add_argument("--model", default="gpt-5.6")
 	translate.add_argument("--json", action="store_true")
@@ -284,14 +309,18 @@ def main():
 			prompt = args.prompt_version or "annotation-v8"
 			_print_json(nrdb.create_job(args.dataset_id, mode, args.limit, args.model, prompt, args.seed, args.translate, args.blind_translation))
 		else:
+			try:
+				semantic_feedback, require_semantic_feedback = _semantic_settings(args)
+			except ValueError as error:
+				parser.error(str(error))
 			start = end = None
 			if args.sentence_id:
 				start, end = args.sentence_id
 			_print_json(nrdb.create_workflow_job(
 				args.dataset_id, args.task, args.limit, args.model, args.seed,
-				translation_evidence=args.translation_evidence, morphology_source=args.morphology_source,
-				needs_filter=args.needs, scope_text_id=args.text_id,
-				scope_sentence_start=start, scope_sentence_end=end,
+				semantic_feedback=semantic_feedback, require_semantic_feedback=require_semantic_feedback,
+				morphology_source=args.morphology_source, needs_filter=args.needs,
+				scope_text_id=args.text_id, scope_sentence_start=start, scope_sentence_end=end,
 			))
 	elif args.command == "list":
 		_print_json(nrdb.jobs())
@@ -320,13 +349,18 @@ def main():
 	elif args.command == "process":
 		if args.json and _explicit_output_mode(args):
 			parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
+		try:
+			semantic_feedback, require_semantic_feedback = _semantic_settings(args)
+		except ValueError as error:
+			parser.error(str(error))
 		display = (lambda _message: None) if args.json else WorkflowProgress(output_mode_from_args(args))
 		try:
 			value = process_dataset(
 				nrdb, args.input, args.task, model_name=args.model, component=args.component,
 				annotation_schema_id=args.annotation_schema_id, region=args.region, default_dialect_id=args.dialect_id,
-				translation_evidence=args.translation_evidence, morphology_source=args.morphology_source,
-				needs=args.needs, target_dialect_ids=args.dialects, id_model=args.id_model,
+				semantic_feedback=semantic_feedback, require_semantic_feedback=require_semantic_feedback,
+				morphology_source=args.morphology_source, needs=args.needs,
+				target_dialect_ids=args.dialects, id_model=args.id_model,
 				surface_model=args.surface_model, output=args.output, limit=args.limit, progress=display,
 			)
 		finally:
@@ -339,15 +373,25 @@ def main():
 			parser.error("Japanese -> Miyako translation requires --dialects ID1,ID2,...")
 		if args.json and _explicit_output_mode(args):
 			parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
+		semantic_feedback = args.semantic_feedback
+		if semantic_feedback is None:
+			semantic_feedback = "generated" if args.target == "japanese" else "none"
+		if args.target == "miyako" and (semantic_feedback != "none" or args.require_semantic_feedback or args.existing_translation):
+			parser.error("semantic feedback is only applicable to direct Miyako -> Japanese translation")
+		kwargs = dict(
+			dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
+			semantic_feedback=semantic_feedback, require_semantic_feedback=args.require_semantic_feedback,
+			existing_translation=args.existing_translation,
+		)
 		if args.json:
-			value = translate_text(nrdb, args.text, args.target, args.annotation_schema_id, args.region, dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model, progress=lambda _message: None)
+			value = translate_text(nrdb, args.text, args.target, args.annotation_schema_id, args.region, progress=lambda _message: None, **kwargs)
 			_print_json(value)
 		else:
 			mode = output_mode_from_args(args)
 			display = TranslationProgress(mode)
 			display.start()
 			try:
-				value = translate_text(nrdb, args.text, args.target, args.annotation_schema_id, args.region, dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model, progress=display)
+				value = translate_text(nrdb, args.text, args.target, args.annotation_schema_id, args.region, progress=display, **kwargs)
 			finally:
 				display.stop()
 			if mode in {"silent", "compact"}:
