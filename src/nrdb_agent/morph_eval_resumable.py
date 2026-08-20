@@ -11,7 +11,7 @@ from .task_agent import SEMANTIC_FEEDBACK_MODES, TaskAwareAnnotationAgent
 from .usage import UsageTracker, tracked_client
 
 
-CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v6"
+CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v5"
 TRANSLATION_FILTERS = {"any", "present", "absent"}
 
 
@@ -163,10 +163,11 @@ def _verify_checkpoint(expected, actual):
 		"format", "morph_run", "train_path", "datasets", "text_internal_id", "cohort_sentence_ids",
 		"limit", "seed", "agent_model", "expected_morph_model", "id_model",
 		"semantic_feedback", "require_semantic_feedback", "translation_filter", "evidence_exclusion",
-		"use_licensed_forms",
 	):
 		if actual.get(key) != expected.get(key):
 			raise ValueError("checkpoint does not match this evaluation: {} differs".format(key))
+	if bool(actual.get("use_licensed_forms", False)) != bool(expected.get("use_licensed_forms", False)):
+		raise ValueError("checkpoint does not match this evaluation: use_licensed_forms differs")
 
 
 def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=None, seed=1,
