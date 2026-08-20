@@ -4,10 +4,35 @@ from .task_agent import TaskAwareAnnotationAgent
 class LicensedTaskAwareAnnotationAgent(TaskAwareAnnotationAgent):
 	"""Inject grammar-licensed generated forms into v9 uncertainty triage.
 
-	Licensed forms are grammar-derived evidence, not corpus attestations.  Exact
+	Licensed forms are grammar-derived evidence, not corpus attestations. Exact
 	surface matches are strong positive evidence for the supplied segmented form
 	and annotation; absence from the licensed table is neutral.
 	"""
+	def _licensed_morph(self, item, job, morph_result):
+		if not isinstance(morph_result, dict) or not job.get("use_licensed_forms"):
+			return morph_result
+		if isinstance(morph_result.get("licensed_realizations"), dict):
+			return morph_result
+		text = str(item.get("text") or "").strip()
+		region = str(item.get("dialect_region") or "").strip()
+		dialect_id = int(item.get("dialect_id") or 0)
+		schema_id = int(job.get("annotation_schema_id") or 0)
+		if not text or dialect_id <= 0 or schema_id <= 0:
+			return morph_result
+		licensed = self.nrdb.licensed_forms_in_text(text, schema_id, region, dialect_id)
+		value = dict(morph_result)
+		value["licensed_realizations"] = licensed
+		self.progress("  licensed: grammar-derived surface matches={}".format(len(licensed.get("matches", []))))
+		return value
+
+	def annotate(self, item, job, morph_result):
+		morph_result = self._licensed_morph(item, job, morph_result)
+		result = super().annotate(item, job, morph_result)
+		licensed = morph_result.get("licensed_realizations") if isinstance(morph_result, dict) else None
+		if isinstance(licensed, dict):
+			result.setdefault("evidence", {})["licensed_realizations"] = licensed
+		return result
+
 	def _prepare_hotspots(self, morph_result, schema_id):
 		value = super()._prepare_hotspots(morph_result, schema_id)
 		licensed = morph_result.get("licensed_realizations") if isinstance(morph_result, dict) else None
