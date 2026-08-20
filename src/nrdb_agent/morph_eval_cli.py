@@ -6,6 +6,10 @@ from .morph_eval_resumable import evaluate_morph_agent_resumable
 from .nrdb import NrdbClient
 
 
+SEMANTIC_FEEDBACK_CHOICES = ["none", "generated", "existing", "auto"]
+TRANSLATION_FILTER_CHOICES = ["any", "present", "absent"]
+
+
 def _dataset_ids(value):
 	if not value:
 		return None
@@ -60,6 +64,11 @@ def _print_summary(payload):
 	print("  rows scored:                {}".format(summary["rows_scored"]))
 	print("  morph model(s):             {}".format(", ".join(summary["morph_model_ids"]) or "unknown"))
 	print("  agent model:                {}".format(summary["agent_model"]))
+	print("  semantic feedback:          {}{}".format(
+		summary.get("semantic_feedback", "none"),
+		" (required)" if summary.get("require_semantic_feedback") else "",
+	))
+	print("  translation filter:         {}".format(summary.get("translation_filter", "any")))
 	print()
 	print("BASELINE -> AGENT")
 	print("  ID match rate:              {} -> {}".format(_pct(baseline["id"]["id_match_rate"]), _pct(agent["id"]["id_match_rate"])))
@@ -110,6 +119,9 @@ def main(argv=None):
 	parser.add_argument("--dataset-ids", type=_dataset_ids, default=None, metavar="ID1,ID2,...", help="optional subset of datasets represented in train.jsonl")
 	parser.add_argument("--limit", type=int, default=None, help="score at most N eligible non-training rows")
 	parser.add_argument("--seed", type=int, default=1, help="deterministic cohort shuffle seed")
+	parser.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default="none", help="Morphology semantic feedback: none, generated Japanese, existing data translation, or auto")
+	parser.add_argument("--require-semantic-feedback", action="store_true", help="Require the selected semantic-feedback source")
+	parser.add_argument("--translation-filter", choices=TRANSLATION_FILTER_CHOICES, default="any", help="Select rows by existing translation availability independently of semantic feedback")
 	parser.add_argument("--expected-morph-model", default=None, help="fail if /analyze reports a different deployed morph model ID")
 	parser.add_argument("--id-model", default=None, help="ID-sequence critic; defaults to NRDB_ID_MODEL")
 	parser.add_argument("--output", default=None, help="write per-row .tsv or complete .json; also defines default checkpoint path")
@@ -122,13 +134,19 @@ def main(argv=None):
 	args = parser.parse_args(argv)
 	if args.limit is not None and args.limit < 1:
 		parser.error("--limit must be positive")
+	if args.require_semantic_feedback and args.semantic_feedback == "none":
+		parser.error("--require-semantic-feedback requires semantic feedback other than none")
 	progress = (lambda _message: None) if args.quiet or args.json else print
 	nrdb = NrdbClient(args.agent_url, args.morph_url)
 	value = evaluate_morph_agent_resumable(
 		nrdb, args.morph_run, model_name=args.model, limit=args.limit, seed=args.seed,
 		dataset_ids=args.dataset_ids, expected_morph_model=args.expected_morph_model,
 		id_model=args.id_model or os.environ.get("NRDB_ID_MODEL"), output=args.output,
-		checkpoint=args.checkpoint, resume=args.resume, progress=progress,
+		checkpoint=args.checkpoint, resume=args.resume,
+		semantic_feedback=args.semantic_feedback,
+		require_semantic_feedback=args.require_semantic_feedback,
+		translation_filter=args.translation_filter,
+		progress=progress,
 	)
 	if args.json:
 		print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
