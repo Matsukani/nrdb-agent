@@ -10,7 +10,7 @@ from .task_agent import SEMANTIC_FEEDBACK_MODES, TaskAwareAnnotationAgent
 from .usage import UsageTracker, tracked_client
 
 
-CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v4"
+CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v5"
 TRANSLATION_FILTERS = {"any", "present", "absent"}
 
 
@@ -65,6 +65,23 @@ def _load_checkpoint(path):
 	return meta, rows
 
 
+def _normalize_evidence_scope(datasets=None, texts=None, sentence_ranges=None, auto_text=None):
+	dataset_values = sorted({int(value) for value in (datasets or []) if int(value) > 0})
+	text_values = {(int(dataset_id), int(text_id)) for dataset_id, text_id in (texts or []) if int(dataset_id) > 0 and int(text_id) > 0}
+	if auto_text is not None:
+		text_values.add((int(auto_text[0]), int(auto_text[1])))
+	range_values = {
+		(int(dataset_id), int(start), int(end))
+		for dataset_id, start, end in (sentence_ranges or [])
+		if int(dataset_id) > 0 and int(start) > 0 and int(end) >= int(start)
+	}
+	return {
+		"datasets": dataset_values,
+		"texts": [list(value) for value in sorted(text_values)],
+		"sentence_ranges": [list(value) for value in sorted(range_values)],
+	}
+
+
 def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
 	require_semantic_feedback, translation_filter, text_internal_id=None):
 	run_dataset_ids = set(contract["dataset_ids"])
@@ -97,8 +114,6 @@ def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
 			continue
 		eligible.append(row)
 	eligible_pool_size = len(eligible)
-	# Explicit text scope is already a meaningful deterministic cohort; preserve
-	# its database order unless a limit is deliberately applied.
 	if text_internal_id is None:
 		rng = random.Random(int(seed))
 		rng.shuffle(eligible)
@@ -117,7 +132,7 @@ def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
 
 
 def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_model, id_model,
-	semantic_feedback, require_semantic_feedback, translation_filter):
+	semantic_feedback, require_semantic_feedback, translation_filter, evidence_exclusion):
 	return {
 		"record_type": "meta",
 		"format": CHECKPOINT_FORMAT,
@@ -134,6 +149,7 @@ def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_m
 		"semantic_feedback": str(semantic_feedback),
 		"require_semantic_feedback": bool(require_semantic_feedback),
 		"translation_filter": str(translation_filter),
+		"evidence_exclusion": evidence_exclusion,
 	}
 
 
@@ -143,7 +159,7 @@ def _verify_checkpoint(expected, actual):
 	for key in (
 		"format", "morph_run", "train_path", "datasets", "text_internal_id", "cohort_sentence_ids",
 		"limit", "seed", "agent_model", "expected_morph_model", "id_model",
-		"semantic_feedback", "require_semantic_feedback", "translation_filter",
+		"semantic_feedback", "require_semantic_feedback", "translation_filter", "evidence_exclusion",
 	):
 		if actual.get(key) != expected.get(key):
 			raise ValueError("checkpoint does not match this evaluation: {} differs".format(key))
@@ -152,7 +168,9 @@ def _verify_checkpoint(expected, actual):
 def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=None, seed=1,
 	dataset_ids=None, expected_morph_model=None, id_model=None, output=None, checkpoint=None,
 	resume=False, semantic_feedback="none", require_semantic_feedback=False,
-	translation_filter="any", text_internal_id=None, openai_client=None, progress=print):
+	translation_filter="any", text_internal_id=None, evidence_exclude_datasets=None,
+	evidence_exclude_texts=None, evidence_exclude_sentence_ranges=None,
+	openai_client=None, progress=print):
 	semantic_feedback = str(semantic_feedback or "none")
 	translation_filter = str(translation_filter or "any")
 	if semantic_feedback not in SEMANTIC_FEEDBACK_MODES:
@@ -170,10 +188,27 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
 		require_semantic_feedback, translation_filter, text_internal_id=text_internal_id,
 	)
+	auto_text = None
+	if text_internal_id is not None:
+		auto_text = (cohort["dataset_ids"][0], text_internal_id)
+	evidence_exclusion = _normalize_evidence_scope(
+		datasets=evidence_exclude_datasets,
+		texts=evidence_exclude_texts,
+		sentence_ranges=evidence_exclude_sentence_ranges,
+		auto_text=auto_text,
+	)
+	nrdb.set_evidence_exclusion(
+		datasets=evidence_exclusion["datasets"],
+		texts=[tuple(value) for value in evidence_exclusion["texts"]],
+		sentence_ranges=[tuple(value) for value in evidence_exclusion["sentence_ranges"]],
+	)
+	progress("evidence exclusion: datasets={} texts={} sentence_ranges={}".format(
+		evidence_exclusion["datasets"], evidence_exclusion["texts"], evidence_exclusion["sentence_ranges"],
+	))
 	checkpoint_path = _checkpoint_path(output=output, checkpoint=checkpoint)
 	expected_meta = _checkpoint_meta(
 		contract, cohort, model_name, limit, seed, expected_morph_model, id_model,
-		semantic_feedback, require_semantic_feedback, translation_filter,
+		semantic_feedback, require_semantic_feedback, translation_filter, evidence_exclusion,
 	)
 
 	existing_meta, existing_rows = _load_checkpoint(checkpoint_path)
@@ -240,6 +275,7 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		row["semantic_feedback"] = semantic_feedback
 		row["existing_translation_present"] = int(bool(existing_translation))
 		row["internal_text_id"] = source.get("internal_text_id") or ""
+		row["evidence_exclusion_json"] = json.dumps(evidence_exclusion, ensure_ascii=False, separators=(",", ":"))
 
 		_append_jsonl(checkpoint_path, {"record_type": "row", "row": row})
 		results.append(row)
@@ -258,7 +294,7 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 	total_cost = sum(float(row.get("agent_cost_usd") or 0.0) for row in results)
 	pricing_complete = all(bool(row.get("agent_pricing_complete")) for row in results)
 	summary.update({
-		"format": "nrdb-agent.morph-ceiling-eval.v6",
+		"format": "nrdb-agent.morph-ceiling-eval.v7",
 		"morph_run": contract["run_dir"],
 		"train_rows": contract["train_rows"],
 		"train_rows_missing_identity": contract["train_rows_missing_identity"],
@@ -275,6 +311,7 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		"semantic_feedback": semantic_feedback,
 		"require_semantic_feedback": bool(require_semantic_feedback),
 		"translation_filter": translation_filter,
+		"evidence_exclusion": evidence_exclusion,
 		"estimated_cost_usd": total_cost,
 		"pricing_complete": pricing_complete,
 		"checkpoint": str(checkpoint_path),
