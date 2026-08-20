@@ -58,16 +58,21 @@ class NrdbClient:
 		})
 
 	def create_workflow_job(self, dataset_id, task, limit, model_name, selection_seed=1,
-		translation_evidence="ignore", morphology_source="predict", needs_filter="any",
-		scope_text_id=None, scope_sentence_start=None, scope_sentence_end=None):
-		return self._workflow_post("create_job", {
+		semantic_feedback="none", require_semantic_feedback=False, morphology_source="predict",
+		needs_filter="any", scope_text_id=None, scope_sentence_start=None, scope_sentence_end=None,
+		translation_evidence=None):
+		payload = {
 			"dataset_id": int(dataset_id), "task": str(task), "limit": int(limit),
 			"model_name": str(model_name), "selection_seed": int(selection_seed),
-			"translation_evidence": str(translation_evidence),
+			"semantic_feedback": str(semantic_feedback),
+			"require_semantic_feedback": bool(require_semantic_feedback),
 			"morphology_source": str(morphology_source), "needs_filter": str(needs_filter),
 			"scope_text_id": scope_text_id, "scope_sentence_start": scope_sentence_start,
 			"scope_sentence_end": scope_sentence_end,
-		})
+		}
+		if translation_evidence is not None:
+			payload["translation_evidence"] = str(translation_evidence)
+		return self._workflow_post("create_job", payload)
 
 	def jobs(self):
 		return self._agent_get("jobs")["jobs"]
