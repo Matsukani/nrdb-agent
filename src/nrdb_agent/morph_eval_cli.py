@@ -110,6 +110,7 @@ def _print_summary(payload):
 		summary.get("semantic_feedback", "none"),
 		" (required)" if summary.get("require_semantic_feedback") else "",
 	))
+	print("  licensed forms:             {}".format("on" if summary.get("use_licensed_forms") else "off"))
 	print("  translation filter:         {}".format(summary.get("translation_filter", "any")))
 	exclusion = summary.get("evidence_exclusion") or {}
 	print("  evidence exclude datasets:  {}".format(exclusion.get("datasets", [])))
@@ -171,6 +172,7 @@ def main(argv=None):
 	parser.add_argument("--seed", type=int, default=1, help="deterministic cohort shuffle seed; ignored for explicit text scope")
 	parser.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default="none", help="Morphology semantic feedback: none, generated Japanese, existing data translation, or auto")
 	parser.add_argument("--require-semantic-feedback", action="store_true", help="Require the selected semantic-feedback source")
+	parser.add_argument("--licensed", action="store_true", help="Use grammar-licensed generated forms as forward morphology evidence")
 	parser.add_argument("--translation-filter", choices=TRANSLATION_FILTER_CHOICES, default="any", help="Select rows by existing translation availability independently of semantic feedback")
 	parser.add_argument("--expected-morph-model", default=None, help="fail if /analyze reports a different deployed morph model ID")
 	parser.add_argument("--id-model", default=None, help="ID-sequence critic; defaults to NRDB_ID_MODEL")
@@ -204,6 +206,7 @@ def main(argv=None):
 		evidence_exclude_datasets=args.exclude_dataset,
 		evidence_exclude_texts=args.exclude_text,
 		evidence_exclude_sentence_ranges=args.exclude_sentences,
+		use_licensed_forms=args.licensed,
 		progress=progress,
 	)
 	if args.json:
