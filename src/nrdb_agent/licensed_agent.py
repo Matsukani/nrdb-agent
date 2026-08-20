@@ -9,7 +9,7 @@ class LicensedTaskAwareAnnotationAgent(TaskAwareAnnotationAgent):
 	and annotation; absence from the licensed table is neutral.
 	"""
 	def _licensed_morph(self, item, job, morph_result):
-		if not isinstance(morph_result, dict) or not job.get("use_licensed_forms"):
+		if not isinstance(morph_result, dict):
 			return morph_result
 		if isinstance(morph_result.get("licensed_realizations"), dict):
 			return morph_result
