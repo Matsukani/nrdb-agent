@@ -71,6 +71,19 @@ def test_translate_threads_construction_mode_independently(monkeypatch):
 	assert result["use_constructions"] is True
 
 
+def test_predict_threads_licensed_mode_and_selects_licensed_agent(monkeypatch):
+	monkeypatch.setattr(workflow, "LicensedTaskAwareAnnotationAgent", FakeAgent)
+	FakeAgent.last_job = None
+	nrdb = FakeNrdb()
+	result = workflow.execute_item(
+		nrdb, _item(), "morph", 2, "宮古",
+		morphology_source="predict", semantic_feedback="none", use_licensed_forms=True,
+	)
+	assert nrdb.morph_calls == 1
+	assert FakeAgent.last_job["use_licensed_forms"] is True
+	assert result["use_licensed_forms"] is True
+
+
 def test_auto_uses_existing_but_predict_calls_morph(monkeypatch):
 	monkeypatch.setattr(workflow, "TaskAwareAnnotationAgent", FakeAgent)
 	nrdb = FakeNrdb()
