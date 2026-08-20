@@ -7,6 +7,7 @@ class FakeNrdb:
 	def __init__(self):
 		self.exclude_job_id = None
 		self.morph_calls = []
+		self.licensed_calls = []
 
 	def region_dialects(self, region, annotation_schema_id):
 		assert region == "宮古"
@@ -26,6 +27,17 @@ class FakeNrdb:
 				"segmentation_top_k": 5,
 				"segmentation_id_weight": 1.0,
 			},
+		}
+
+	def licensed_forms_in_text(self, text, annotation_schema_id, region, dialect_id):
+		self.licensed_calls.append((text, annotation_schema_id, region, dialect_id))
+		return {
+			"evidence_type": "grammar_licensed_not_observed",
+			"matches": [{
+				"matched_surface": "numai", "form_romaji": "numai",
+				"form_romaji_seg": "num-ai", "annotation": "飲nv-ppt>1",
+				"license_status": "licensed", "scope": "same_region",
+			}],
 		}
 
 
@@ -48,6 +60,13 @@ class FakeForwardAgent:
 class ConstructionAwareForwardAgent(FakeForwardAgent):
 	def annotate(self, item, job, morph):
 		assert job["use_constructions"] is True
+		return super().annotate(item, job, morph)
+
+
+class LicensedForwardAgent(FakeForwardAgent):
+	def annotate(self, item, job, morph):
+		assert job["use_licensed_forms"] is True
+		assert morph["licensed_realizations"]["matches"][0]["annotation"] == "飲nv-ppt>1"
 		return super().annotate(item, job, morph)
 
 
@@ -80,10 +99,12 @@ def test_direct_miyako_to_japanese_uses_region_dialect_morph_service_and_provena
 	messages = []
 	result = translate_module.translate_text(nrdb, "mija", "japanese", 2, "宮古", progress=messages.append)
 	assert nrdb.morph_calls == [("mija", 22, 2)]
+	assert nrdb.licensed_calls == []
 	assert result["translation"] == "見るよ。"
 	assert result["morph_dialect_id"] == 22
 	assert result["morph_inference"]["model_id"] == "miyako-65k-hybrid-shared-v002"
 	assert result["use_constructions"] is False
+	assert result["use_licensed_forms"] is False
 	assert any("miyako-65k-hybrid-shared-v002" in message and "top-k=5" in message for message in messages)
 	assert nrdb.exclude_job_id == 0
 
@@ -96,6 +117,19 @@ def test_direct_miyako_to_japanese_threads_construction_flag(monkeypatch):
 	)
 	assert result["translation"] == "見るよ。"
 	assert result["use_constructions"] is True
+
+
+def test_direct_miyako_to_japanese_prefetches_licensed_forms(monkeypatch):
+	monkeypatch.setattr(translate_module, "LicensedTaskAwareAnnotationAgent", LicensedForwardAgent)
+	nrdb = FakeNrdb()
+	messages = []
+	result = translate_module.translate_text(
+		nrdb, "unu numai", "japanese", 2, "宮古", use_licensed_forms=True, progress=messages.append,
+	)
+	assert nrdb.licensed_calls == [("unu numai", 2, "宮古", 22)]
+	assert result["use_licensed_forms"] is True
+	assert result["evidence"]["licensed_realizations"]["matches"][0]["form_romaji_seg"] == "num-ai"
+	assert any("licensed: grammar-derived surface matches=1" in message for message in messages)
 
 
 def test_direct_translation_retries_malformed_tool_json(monkeypatch):
