@@ -9,6 +9,7 @@ class NrdbClient:
 		base_url = self.agent_url.rsplit("/", 1)[0]
 		self.workflow_url = os.environ.get("NRDB_AGENT_WORKFLOW_URL") or base_url + "/agent_workflow.php"
 		self.evidence_url = os.environ.get("NRDB_AGENT_EVIDENCE_URL") or base_url + "/agent_evidence.php"
+		self.constructions_url = os.environ.get("NRDB_AGENT_CONSTRUCTIONS_URL") or base_url + "/agent_constructions.php"
 		self.results_url = os.environ.get("NRDB_AGENT_RESULTS_URL") or base_url + "/agent_results.php"
 		self.morph_eval_url = os.environ.get("NRDB_AGENT_MORPH_EVAL_URL") or base_url + "/agent_morph_eval.php"
 		self.form_support_url = os.environ.get("NRDB_AGENT_FORM_SUPPORT_URL") or base_url + "/agent_form_support.php"
@@ -75,14 +76,15 @@ class NrdbClient:
 		})
 
 	def create_workflow_job(self, dataset_id, task, limit, model_name, selection_seed=1,
-		semantic_feedback="none", require_semantic_feedback=False, morphology_source="predict",
-		needs_filter="any", scope_text_id=None, scope_sentence_start=None, scope_sentence_end=None,
-		translation_evidence=None):
+		semantic_feedback="none", require_semantic_feedback=False, use_constructions=False,
+		morphology_source="predict", needs_filter="any", scope_text_id=None,
+		scope_sentence_start=None, scope_sentence_end=None, translation_evidence=None):
 		payload = {
 			"dataset_id": int(dataset_id), "task": str(task), "limit": int(limit),
 			"model_name": str(model_name), "selection_seed": int(selection_seed),
 			"semantic_feedback": str(semantic_feedback),
 			"require_semantic_feedback": bool(require_semantic_feedback),
+			"use_constructions": bool(use_constructions),
 			"morphology_source": str(morphology_source), "needs_filter": str(needs_filter),
 			"scope_text_id": scope_text_id, "scope_sentence_start": scope_sentence_start,
 			"scope_sentence_end": scope_sentence_end,
@@ -143,6 +145,17 @@ class NrdbClient:
 
 	def lookup_id(self, label, annotation_schema_id):
 		return self._evidence_get("lookup_id", label=label, annotation_schema_id=int(annotation_schema_id))
+
+	def construction_candidates(self, annotation, annotation_schema_id, region=None, dialect_id=None):
+		payload = self.http.get(self.constructions_url, {
+			"annotation": str(annotation or "").strip(),
+			"annotation_schema_id": int(annotation_schema_id),
+			"region": str(region or "").strip(),
+			"dialect_id": "" if dialect_id in (None, "") else int(dialect_id),
+		})
+		if not payload.get("success"):
+			raise RuntimeError(payload.get("error") or "NRDB construction lookup failed")
+		return payload
 
 	def examples(self, label, annotation_schema_id, exclude_sentence_id, limit=12, exclude_job_id=None):
 		label = str(label or "").strip()
