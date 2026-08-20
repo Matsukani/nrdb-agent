@@ -1,4 +1,5 @@
 import itertools
+import re
 import sys
 import threading
 import time
@@ -70,6 +71,10 @@ def format_elapsed(seconds):
 	if hours:
 		return "{}h{:02d}m{:02d}s".format(hours, minutes, secs)
 	return "{}m{:02d}s".format(minutes, secs)
+
+
+def cost_elapsed_text(cost_text, elapsed_seconds):
+	return "{} | {}".format(str(cost_text), format_elapsed(elapsed_seconds))
 
 
 class MilestoneBar:
@@ -149,14 +154,34 @@ class TranslationProgress:
 		self.stream = stream or sys.stdout
 		self.progress_stream = progress_stream or sys.stderr
 		self.bar = MilestoneBar(self.progress_stream, show_label=(mode == "compact")) if mode in {"silent", "compact"} else None
+		self.started_at = None
+		self.observed_cost_text = None
 
 	def start(self):
+		self.started_at = time.monotonic()
 		if self.bar is not None:
 			self.bar.start()
+
+	def elapsed(self):
+		if self.started_at is None:
+			return 0.0
+		return max(0.0, time.monotonic() - self.started_at)
+
+	def _remember_accounting(self, text):
+		stripped = text.strip()
+		if not stripped.startswith("API usage:"):
+			return
+		match = re.search(r"estimated_cost=(\$[0-9]+(?:\.[0-9]+)?|unknown)", stripped)
+		if match:
+			self.observed_cost_text = match.group(1) if match.group(1) != "unknown" else "cost unknown"
 
 	def stop(self):
 		if self.bar is not None:
 			self.bar.stop()
+		if self.started_at is not None:
+			cost = self.observed_cost_text or "cost unknown"
+			print("complete | {}".format(cost_elapsed_text(cost, self.elapsed())), file=self.stream)
+			self.stream.flush()
 
 	def _milestone(self, text):
 		stripped = text.strip()
@@ -167,6 +192,7 @@ class TranslationProgress:
 
 	def __call__(self, message):
 		text = str(message or "")
+		self._remember_accounting(text)
 		if self.bar is not None:
 			milestone = self._milestone(text)
 			if milestone is not None:
@@ -213,16 +239,16 @@ class WorkflowProgress(TranslationProgress):
 		prefix = "[{}/{}]".format(index, total)
 		value = _result_text(task, result)
 		cost = estimated_cost_text(result)
-		elapsed = format_elapsed(self._item_elapsed())
+		accounting = cost_elapsed_text(cost, self._item_elapsed())
 		if self.mode == "compact":
 			source = str(result.get("source") or "").strip() if isinstance(result, dict) else ""
 			if source:
 				print("{} {}".format(prefix, source), file=self.stream)
-				print("{}→ {} ({} | {})".format(" " * (len(prefix) + 1), value, cost, elapsed), file=self.stream)
+				print("{}→ {} ({})".format(" " * (len(prefix) + 1), value, accounting), file=self.stream)
 			else:
-				print("{} {} ({} | {})".format(prefix, value, cost, elapsed), file=self.stream)
+				print("{} {} ({})".format(prefix, value, accounting), file=self.stream)
 		else:
-			print("{} {} ({} | {})".format(prefix, value, cost, elapsed), file=self.stream)
+			print("{} {} ({})".format(prefix, value, accounting), file=self.stream)
 		self.stream.flush()
 
 	def item_error(self, index, total, error, label=None):
@@ -234,8 +260,8 @@ class WorkflowProgress(TranslationProgress):
 
 	def job_summary(self, completed, total, estimated_cost_usd, failed=0, pricing_complete=True):
 		cost = "${:.4f}".format(float(estimated_cost_usd)) if pricing_complete else "cost unknown"
-		elapsed = format_elapsed(time.monotonic() - self.job_started_at)
-		print("{}/{} completed | failed={} | estimated total {} | elapsed {}".format(completed, total, failed, cost, elapsed), file=self.stream)
+		accounting = cost_elapsed_text(cost, time.monotonic() - self.job_started_at)
+		print("{}/{} completed | failed={} | estimated total {}".format(completed, total, failed, accounting), file=self.stream)
 		self.stream.flush()
 
 	def stop(self):
