@@ -61,6 +61,8 @@ def _print_summary(payload):
 	print("  morph run:                  {}".format(summary["morph_run"]))
 	print("  train rows excluded:        {}".format(summary["train_rows"]))
 	print("  datasets:                   {}".format(",".join(map(str, summary["datasets"]))))
+	if summary.get("text_internal_id") is not None:
+		print("  internal text ID:           {}".format(summary["text_internal_id"]))
 	print("  rows scored:                {}".format(summary["rows_scored"]))
 	print("  morph model(s):             {}".format(", ".join(summary["morph_model_ids"]) or "unknown"))
 	print("  agent model:                {}".format(summary["agent_model"]))
@@ -117,8 +119,9 @@ def main(argv=None):
 	parser.add_argument("morph_run", help="nrdb-morph training-run directory containing train.jsonl")
 	parser.add_argument("--model", default="gpt-5.6-terra", help="agent LLM model")
 	parser.add_argument("--dataset-ids", type=_dataset_ids, default=None, metavar="ID1,ID2,...", help="optional subset of datasets represented in train.jsonl")
+	parser.add_argument("--text-id", type=int, default=None, help="restrict one text dataset to its dataset-scoped internal text ID; requires exactly one --dataset-ids value")
 	parser.add_argument("--limit", type=int, default=None, help="score at most N eligible non-training rows")
-	parser.add_argument("--seed", type=int, default=1, help="deterministic cohort shuffle seed")
+	parser.add_argument("--seed", type=int, default=1, help="deterministic cohort shuffle seed; ignored for explicit text scope")
 	parser.add_argument("--semantic-feedback", choices=SEMANTIC_FEEDBACK_CHOICES, default="none", help="Morphology semantic feedback: none, generated Japanese, existing data translation, or auto")
 	parser.add_argument("--require-semantic-feedback", action="store_true", help="Require the selected semantic-feedback source")
 	parser.add_argument("--translation-filter", choices=TRANSLATION_FILTER_CHOICES, default="any", help="Select rows by existing translation availability independently of semantic feedback")
@@ -134,6 +137,11 @@ def main(argv=None):
 	args = parser.parse_args(argv)
 	if args.limit is not None and args.limit < 1:
 		parser.error("--limit must be positive")
+	if args.text_id is not None:
+		if args.text_id < 1:
+			parser.error("--text-id must be positive")
+		if not args.dataset_ids or len(args.dataset_ids) != 1:
+			parser.error("--text-id requires exactly one --dataset-ids value")
 	if args.require_semantic_feedback and args.semantic_feedback == "none":
 		parser.error("--require-semantic-feedback requires semantic feedback other than none")
 	progress = (lambda _message: None) if args.quiet or args.json else print
@@ -145,7 +153,7 @@ def main(argv=None):
 		checkpoint=args.checkpoint, resume=args.resume,
 		semantic_feedback=args.semantic_feedback,
 		require_semantic_feedback=args.require_semantic_feedback,
-		translation_filter=args.translation_filter,
+		translation_filter=args.translation_filter, text_internal_id=args.text_id,
 		progress=progress,
 	)
 	if args.json:
