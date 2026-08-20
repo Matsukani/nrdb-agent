@@ -27,7 +27,7 @@ def _semantic_feedback(semantic_feedback=None, require_semantic_feedback=False, 
 		if legacy == "required":
 			return "existing", True
 		if legacy == "use":
-			return "existing", bool(require_semantic_feedback)
+			return "auto", bool(require_semantic_feedback)
 		return "none", bool(require_semantic_feedback)
 	mode = str(semantic_feedback or "none")
 	if mode not in SEMANTIC_FEEDBACK_MODES:
@@ -62,6 +62,25 @@ def _item_result(progress, index, total, task, result, label):
 def _job_summary(progress, completed, total, cost, failed, pricing_complete):
 	if hasattr(progress, "job_summary"):
 		progress.job_summary(completed, total, cost, failed=failed, pricing_complete=pricing_complete)
+
+
+def _job_scope(progress, bundle):
+	scope = bundle.get("scope") if isinstance(bundle, dict) else None
+	if not isinstance(scope, dict):
+		return
+	extra = []
+	if scope.get("internal_text_id") is not None:
+		extra.append("text={}".format(scope["internal_text_id"]))
+	if scope.get("sentence_start") is not None:
+		extra.append("sentences={}:{}".format(scope["sentence_start"], scope.get("sentence_end")))
+	suffix = " | " + " ".join(extra) if extra else ""
+	progress(
+		"job scope: eligible={} selected={} completed={} remaining={} limit={}{}".format(
+			scope.get("eligible_utterances", 0), scope.get("selected_utterances", 0),
+			scope.get("completed_utterances", 0), scope.get("remaining_utterances", 0),
+			scope.get("item_limit", 0), suffix,
+		)
+	)
 
 
 def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt-5.6",
@@ -150,8 +169,6 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 	agent = TaskAwareAnnotationAgent(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
 
 	if use_existing:
-		# Existing morphology is explicitly frozen. Semantic feedback is meaningful
-		# only while predicted morphology is still reviewable.
 		if task == "morph":
 			result = {
 				"segmented": segmented, "annotation": annotation, "trsl_ai": "",
@@ -180,6 +197,7 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 	bundle = nrdb.workflow_job_items(job_id)
 	job = bundle["job"]
 	items = list(bundle.get("items", []))
+	_job_scope(progress, bundle)
 	if max_items is not None:
 		items = items[:max(0, int(max_items))]
 	nrdb.exclude_job_id = int(job_id)
@@ -225,6 +243,7 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 				"require_semantic_feedback": bool(job.get("require_semantic_feedback")),
 				"completed": completed, "failed": failed,
 				"estimated_cost_usd": cost, "pricing_complete": pricing_complete,
+				"scope": bundle.get("scope", {}),
 			}
 		return summary
 	except BaseException as error:
