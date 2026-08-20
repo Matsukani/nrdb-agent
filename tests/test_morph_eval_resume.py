@@ -39,6 +39,7 @@ def _meta(**values):
 		"morph_run": "/run",
 		"train_path": "/run/train.jsonl",
 		"datasets": [30],
+		"text_internal_id": None,
 		"cohort_sentence_ids": [10, 11, 12],
 		"limit": 3,
 		"seed": 1,
@@ -74,4 +75,11 @@ def test_checkpoint_translation_filter_is_part_of_experiment_identity():
 	expected = _meta(translation_filter="present")
 	actual = _meta(translation_filter="any")
 	with pytest.raises(ValueError, match="translation_filter differs"):
+		_verify_checkpoint(expected, actual)
+
+
+def test_checkpoint_internal_text_scope_is_part_of_experiment_identity():
+	expected = _meta(text_internal_id=50)
+	actual = _meta(text_internal_id=51)
+	with pytest.raises(ValueError, match="text_internal_id differs"):
 		_verify_checkpoint(expected, actual)
