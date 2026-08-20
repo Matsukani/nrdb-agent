@@ -13,6 +13,7 @@ class SemanticHarness(TaskAwareAnnotationAgent):
 		self.revise = revise
 		self.generated_calls = 0
 		self.review_calls = 0
+		self._shared_evidence = {"lookup": {}, "corpus": {}, "form": {}}
 
 	def _annotation_phase_v9(self, item, job, morph_result):
 		return {
@@ -43,9 +44,6 @@ class SemanticHarness(TaskAwareAnnotationAgent):
 			"action": "keep", "segmented": result["segmented"], "annotation": result["annotation"],
 			"confidence": 0.9, "changed_ids": [], "note": "coherent",
 		}
-
-	def _shared_evidence_compact(self):
-		return {}
 
 
 def _item(translation=""):
@@ -104,3 +102,39 @@ def test_existing_feedback_uses_data_translation_without_generating_one_for_morp
 	assert agent.generated_calls == 0
 	assert agent.review_calls == 1
 	assert result["evidence"]["semantic_feedback"]["source"] == "human"
+
+
+def test_v9_semantic_review_adapters_expose_cached_evidence_and_legacy_parser_signature():
+	agent = SemanticHarness()
+	agent._shared_evidence = {
+		"lookup": {
+			"人pn": {"success": True, "label": "人pn", "lexical_entries": [], "local": None, "global": None},
+		},
+		"corpus": {
+			"人pn-top:1": {"success": True, "label": "人pn-top:1", "examples": []},
+		},
+		"form": {
+			"pstu\t人pn": {"success": True, "surface": "pstu", "candidate_id": "人pn", "combined": {}},
+		},
+	}
+	compact = agent._shared_evidence_compact()
+	assert compact["lookup"][0]["label"] == "人pn"
+	assert compact["corpus"][0]["label"] == "人pn-top:1"
+	assert compact["form"][0]["surface"] == "pstu"
+	assert compact["form"][0]["candidate_id"] == "人pn"
+	assert agent._review_query_already_known("ground_lexical_ids", {"labels": ["人pn"]}) is True
+	assert agent._review_query_already_known("corpus_examples", {"label": "人pn-top:1"}) is True
+	assert agent._review_query_already_known("form_id_support", {"surface": "pstu", "candidate_id": "人pn"}) is True
+	parsed = agent._parse_review(
+		'{"action":"keep","segmented":"a-b","annotation":"A-B","confidence":0.9,"changed_ids":[],"note":"ok"}',
+		{"segmented": "a-b", "annotation": "A-B"},
+	)
+	assert parsed["action"] == "keep"
+	assert agent.max_review_rounds == 4
+
+
+def test_legacy_translation_evidence_use_maps_to_auto_feedback():
+	mode, active, required = TaskAwareAnnotationAgent._semantic_policy({"translation_evidence": "use"}, "")
+	assert mode == "auto"
+	assert active == "generated"
+	assert required is False
