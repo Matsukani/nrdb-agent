@@ -60,6 +60,18 @@ def output_mode_from_args(args):
 	return "quiet"
 
 
+def format_elapsed(seconds):
+	seconds = max(0.0, float(seconds or 0.0))
+	if seconds < 60:
+		return "{:.1f}s".format(seconds)
+	total = int(round(seconds))
+	hours, remainder = divmod(total, 3600)
+	minutes, secs = divmod(remainder, 60)
+	if hours:
+		return "{}h{:02d}m{:02d}s".format(hours, minutes, secs)
+	return "{}m{:02d}s".format(minutes, secs)
+
+
 class MilestoneBar:
 	def __init__(self, stream=None, interval=0.10, width=10, show_label=False):
 		self.stream = stream or sys.stderr
@@ -175,16 +187,24 @@ class WorkflowProgress(TranslationProgress):
 		self.current_index = None
 		self.current_total = None
 		self.current_label = None
+		self.job_started_at = time.monotonic()
+		self.item_started_at = None
 
 	def item_start(self, index, total, label=None):
 		self.current_index = int(index)
 		self.current_total = int(total)
 		self.current_label = str(label or "")
+		self.item_started_at = time.monotonic()
 		if self.bar is not None:
 			self.bar = MilestoneBar(self.progress_stream, show_label=(self.mode == "compact"))
 			self.bar.start()
 		elif self.mode == "verbose":
 			print("[{}/{}] {}".format(index, total, self.current_label), file=self.stream)
+
+	def _item_elapsed(self):
+		if self.item_started_at is None:
+			return 0.0
+		return max(0.0, time.monotonic() - self.item_started_at)
 
 	def item_result(self, index, total, task, result, label=None):
 		if self.bar is not None:
@@ -193,27 +213,29 @@ class WorkflowProgress(TranslationProgress):
 		prefix = "[{}/{}]".format(index, total)
 		value = _result_text(task, result)
 		cost = estimated_cost_text(result)
+		elapsed = format_elapsed(self._item_elapsed())
 		if self.mode == "compact":
 			source = str(result.get("source") or "").strip() if isinstance(result, dict) else ""
 			if source:
 				print("{} {}".format(prefix, source), file=self.stream)
-				print("{}→ {} ({})".format(" " * (len(prefix) + 1), value, cost), file=self.stream)
+				print("{}→ {} ({} | {})".format(" " * (len(prefix) + 1), value, cost, elapsed), file=self.stream)
 			else:
-				print("{} {} ({})".format(prefix, value, cost), file=self.stream)
+				print("{} {} ({} | {})".format(prefix, value, cost, elapsed), file=self.stream)
 		else:
-			print("{} {} ({})".format(prefix, value, cost), file=self.stream)
+			print("{} {} ({} | {})".format(prefix, value, cost, elapsed), file=self.stream)
 		self.stream.flush()
 
 	def item_error(self, index, total, error, label=None):
 		if self.bar is not None:
 			self.bar.stop(complete=False)
 			self.bar = None
-		print("[{}/{}] FAILED: {}".format(index, total, error), file=self.stream)
+		print("[{}/{}] FAILED after {}: {}".format(index, total, format_elapsed(self._item_elapsed()), error), file=self.stream)
 		self.stream.flush()
 
 	def job_summary(self, completed, total, estimated_cost_usd, failed=0, pricing_complete=True):
 		cost = "${:.4f}".format(float(estimated_cost_usd)) if pricing_complete else "cost unknown"
-		print("{}/{} completed | failed={} | estimated total {}".format(completed, total, failed, cost), file=self.stream)
+		elapsed = format_elapsed(time.monotonic() - self.job_started_at)
+		print("{}/{} completed | failed={} | estimated total {} | elapsed {}".format(completed, total, failed, cost, elapsed), file=self.stream)
 		self.stream.flush()
 
 	def stop(self):
