@@ -1,6 +1,6 @@
 from io import StringIO
 
-from nrdb_agent.cli_output import TranslationProgress, WorkflowProgress, estimated_cost_text, silent_translation_line
+from nrdb_agent.cli_output import TranslationProgress, WorkflowProgress, estimated_cost_text, format_elapsed, silent_translation_line
 
 
 def _value():
@@ -16,6 +16,12 @@ def _value():
 def test_silent_translation_line_includes_estimated_cost():
 	assert silent_translation_line(_value()) == "東はどこにあるのか。 ($0.0901)"
 	assert estimated_cost_text(_value()) == "$0.0901"
+
+
+def test_elapsed_formatting():
+	assert format_elapsed(12.34) == "12.3s"
+	assert format_elapsed(62) == "1m02s"
+	assert format_elapsed(3661) == "1h01m01s"
 
 
 def test_default_progress_is_quiet_and_keeps_only_major_milestones():
@@ -67,18 +73,18 @@ def test_compact_progress_tracks_current_milestone_label():
 	assert "===" in bar_stream.getvalue()
 
 
-def test_workflow_progress_streams_translation_and_item_cost():
+def test_workflow_progress_streams_translation_cost_and_elapsed_time():
 	stream = StringIO()
 	progress = WorkflowProgress("quiet", stream=stream, progress_stream=StringIO())
 	progress.item_start(2, 100, "sentence 15456")
 	progress.item_result(2, 100, "translate", _value(), "sentence 15456")
 	progress.job_summary(100, 100, 0.8427, failed=0, pricing_complete=True)
 	value = stream.getvalue()
-	assert "[2/100] 東はどこにあるのか。 ($0.0901)" in value
-	assert "100/100 completed | failed=0 | estimated total $0.8427" in value
+	assert "[2/100] 東はどこにあるのか。 ($0.0901 | " in value
+	assert "100/100 completed | failed=0 | estimated total $0.8427 | elapsed " in value
 
 
-def test_compact_workflow_result_shows_source_then_translation_and_cost():
+def test_compact_workflow_result_shows_source_then_translation_cost_and_time():
 	stream = StringIO()
 	value = _value()
 	value["source"] = "agarɿ wa nzaːn aɿga"
@@ -86,4 +92,4 @@ def test_compact_workflow_result_shows_source_then_translation_and_cost():
 	progress.item_result(7, 20, "translate", value, "sentence 77")
 	lines = stream.getvalue().splitlines()
 	assert lines[0] == "[7/20] agarɿ wa nzaːn aɿga"
-	assert lines[1].strip() == "→ 東はどこにあるのか。 ($0.0901)"
+	assert lines[1].strip().startswith("→ 東はどこにあるのか。 ($0.0901 | ")
