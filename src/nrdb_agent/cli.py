@@ -88,6 +88,16 @@ def _parse_sentence_range(value):
 	return (start, end)
 
 
+def _positive_count(value):
+	try:
+		value = int(value)
+	except (TypeError, ValueError) as error:
+		raise argparse.ArgumentTypeError("count must be a positive integer") from error
+	if value < 1:
+		raise argparse.ArgumentTypeError("count must be a positive integer")
+	return value
+
+
 def _semantic_settings(args):
 	mode = str(getattr(args, "semantic_feedback", None) or "none")
 	require = bool(getattr(args, "require_semantic_feedback", False))
@@ -101,6 +111,58 @@ def _semantic_settings(args):
 			return "existing", False
 		return "none", False
 	return mode, require
+
+
+def _job_task(job):
+	return str(job.get("task") or ("reverse" if job.get("prompt_version") == "reverse-v1" else "morph"))
+
+
+def _select_jobs(jobs, latest=None):
+	ordered = sorted(list(jobs or []), key=lambda job: int(job.get("id") or 0))
+	if latest is not None:
+		ordered = ordered[-int(latest):]
+	return ordered
+
+
+def _job_scope_text(job):
+	parts = []
+	if job.get("scope_text_id") not in (None, ""):
+		parts.append("text={}".format(job["scope_text_id"]))
+	if job.get("scope_sentence_start") not in (None, ""):
+		start = job["scope_sentence_start"]
+		end = job.get("scope_sentence_end") or start
+		parts.append("sentences={}:{}".format(start, end))
+	return " ".join(parts) or "all"
+
+
+def _print_jobs(jobs, short=False):
+	if not jobs:
+		print("No jobs.")
+		return
+	for job in jobs:
+		job_id = int(job.get("id") or 0)
+		status = str(job.get("status") or "")
+		dataset_id = job.get("dataset_id") or "?"
+		dataset_name = str(job.get("dataset_name") or "")
+		task = _job_task(job)
+		model = str(job.get("model_name") or "")
+		limit = job.get("item_limit") or "?"
+		created = str(job.get("created_at") or "")
+		if short:
+			print("#{:<4} {:<10} ds={} {:<18} {:<15} model={} limit={} scope={} {}".format(
+				job_id, status, dataset_id, dataset_name[:18], task, model, limit, _job_scope_text(job), created,
+			).rstrip())
+			continue
+		print("#{}  {}  dataset {}{}  task={}  model={}".format(
+			job_id, status, dataset_id, " ({})".format(dataset_name) if dataset_name else "", task, model,
+		))
+		print("  limit={} seed={} scope={} created={}".format(
+			limit, job.get("selection_seed") or "?", _job_scope_text(job), created or "?",
+		))
+		if job.get("morphology_source") or job.get("semantic_feedback") or job.get("needs_filter"):
+			print("  morphology={} semantic_feedback={} needs={}".format(
+				job.get("morphology_source") or "-", job.get("semantic_feedback") or "-", job.get("needs_filter") or "-",
+			))
 
 
 def _print_results(payload, show_sentences=0):
@@ -231,7 +293,10 @@ def main():
 	create.add_argument("--translate", action="store_true", help=argparse.SUPPRESS)
 	create.add_argument("--blind-translation", action="store_true", help=argparse.SUPPRESS)
 
-	sub.add_parser("list", help="List recent jobs")
+	list_cmd = sub.add_parser("list", help="List jobs oldest to newest")
+	list_cmd.add_argument("--latest", nargs="?", const=1, default=None, type=_positive_count, metavar="N", help="Show only the latest job; optionally show the latest N jobs")
+	list_cmd.add_argument("--short", action="store_true", help="Print exactly one line per job")
+	list_cmd.add_argument("--json", action="store_true", help="Print selected jobs as JSON")
 
 	run = sub.add_parser("run", help="Run one existing job")
 	run.add_argument("job_id", type=int)
@@ -323,7 +388,8 @@ def main():
 				scope_text_id=args.text_id, scope_sentence_start=start, scope_sentence_end=end,
 			))
 	elif args.command == "list":
-		_print_json(nrdb.jobs())
+		jobs = _select_jobs(nrdb.jobs(), latest=args.latest)
+		_print_json(jobs) if args.json else _print_jobs(jobs, short=args.short)
 	elif args.command == "run":
 		if args.json and _explicit_output_mode(args):
 			parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
