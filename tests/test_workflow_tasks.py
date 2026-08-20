@@ -7,7 +7,10 @@ class FakeNrdb:
 
 	def morph_analyze(self, text, dialect_id, annotation_schema_id):
 		self.morph_calls += 1
-		return {"segmented": "pred-seg", "annotation": "pred-ann", "phrases": []}
+		return {
+			"segmented": "pred-seg", "annotation": "pred-ann", "phrases": [],
+			"inference": {"model_id": "morph-v1", "model_label": "Morph V1"},
+		}
 
 	def validate_analysis(self, text, segmented, annotation):
 		return {"valid": True}
@@ -48,6 +51,7 @@ def test_translate_existing_skips_morph_model(monkeypatch):
 	assert nrdb.morph_calls == 0
 	assert result["annotation"] == "gold-ann"
 	assert result["translation"] == "訳"
+	assert result["morph_baseline"]["source"] == "existing"
 
 
 def test_auto_uses_existing_but_predict_calls_morph(monkeypatch):
@@ -55,8 +59,12 @@ def test_auto_uses_existing_but_predict_calls_morph(monkeypatch):
 	nrdb = FakeNrdb()
 	workflow.execute_item(nrdb, _item(), "morph", 2, "宮古", morphology_source="auto")
 	assert nrdb.morph_calls == 0
-	workflow.execute_item(nrdb, _item(), "morph", 2, "宮古", morphology_source="predict")
+	result = workflow.execute_item(nrdb, _item(), "morph", 2, "宮古", morphology_source="predict")
 	assert nrdb.morph_calls == 1
+	assert result["morph_baseline"]["source"] == "nrdb-morph"
+	assert result["morph_baseline"]["segmented"] == "pred-seg"
+	assert result["morph_baseline"]["annotation"] == "pred-ann"
+	assert result["morph_baseline"]["inference"]["model_id"] == "morph-v1"
 
 
 def test_required_translation_is_enforced(monkeypatch):
