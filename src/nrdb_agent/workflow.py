@@ -1,5 +1,6 @@
 import os
 
+from .licensed_agent import LicensedTaskAwareAnnotationAgent
 from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
@@ -83,11 +84,13 @@ def _morph_baseline(morph, source="nrdb-morph"):
 
 def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt-5.6",
 	semantic_feedback=None, require_semantic_feedback=False, use_constructions=False,
-	morphology_source="predict", target_dialect_ids=None, id_model=None, surface_model=None,
-	openai_client=None, progress=print, translation_evidence=None):
+	use_licensed_forms=False, morphology_source="predict", target_dialect_ids=None,
+	id_model=None, surface_model=None, openai_client=None, progress=print,
+	translation_evidence=None):
 	task = str(task or "morph")
 	morphology_source = str(morphology_source or "predict")
 	use_constructions = bool(use_constructions)
+	use_licensed_forms = bool(use_licensed_forms)
 	semantic_feedback, require_semantic_feedback = _semantic_feedback(semantic_feedback, require_semantic_feedback, translation_evidence)
 	if task not in TASKS: raise ValueError("invalid task: {}".format(task))
 	if morphology_source not in MORPHOLOGY_SOURCES: raise ValueError("invalid morphology_source: {}".format(morphology_source))
@@ -105,8 +108,8 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 	client = tracked_client(openai_client, tracker)
 
 	if task == "reverse":
-		if semantic_feedback != "none" or require_semantic_feedback or use_constructions:
-			raise ValueError("semantic feedback and constructions are not used for reverse tasks")
+		if semantic_feedback != "none" or require_semantic_feedback or use_constructions or use_licensed_forms:
+			raise ValueError("semantic feedback, constructions and licensed forms are not used for reverse tasks")
 		japanese = str(item.get("translation_jp") or item.get("translation") or item.get("japanese") or text or "").strip()
 		if not japanese: raise ValueError("reverse task requires Japanese input")
 		dialects = [int(value) for value in (target_dialect_ids or [dialect_id])]
@@ -117,7 +120,7 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		else: agent = SyntaxAwareReverseSurfaceAgent(nrdb, model_name, client=client, progress=progress)
 		result = agent.annotate(reverse_item, job, None)
 		usage = tracker.summary()
-		return {"source": japanese, "segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""), "translation": result.get("segmented", ""), "decision": result.get("decision"), "confidence": result.get("confidence"), "evidence": result.get("evidence", {}), "api_usage": usage, "estimated_cost_usd": _usage_cost(usage), "model": model_name, "morph_baseline": None, "use_constructions": False}
+		return {"source": japanese, "segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""), "translation": result.get("segmented", ""), "decision": result.get("decision"), "confidence": result.get("confidence"), "evidence": result.get("evidence", {}), "api_usage": usage, "estimated_cost_usd": _usage_cost(usage), "model": model_name, "morph_baseline": None, "use_constructions": False, "use_licensed_forms": False}
 
 	segmented, annotation = _existing_morphology(item)
 	has_existing = bool(segmented and annotation)
@@ -133,11 +136,12 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		"annotation_schema_id": annotation_schema_id, "model_name": model_name,
 		"prompt_version": "annotation-v9", "task": task,
 		"semantic_feedback": semantic_feedback, "require_semantic_feedback": require_semantic_feedback,
-		"use_constructions": use_constructions,
+		"use_constructions": use_constructions, "use_licensed_forms": use_licensed_forms,
 		"morphology_source": morphology_source, "produce_translation": task in {"translate", "morph-translate"},
 		"blind_translation": False,
 	}
-	agent = TaskAwareAnnotationAgent(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
+	agent_class = LicensedTaskAwareAnnotationAgent if use_licensed_forms else TaskAwareAnnotationAgent
+	agent = agent_class(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
 	morph_baseline = None
 
 	if use_existing:
@@ -159,7 +163,8 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		"translation": result.get("trsl_ai", ""), "decision": result.get("decision"),
 		"confidence": result.get("confidence"), "evidence": result.get("evidence", {}),
 		"api_usage": usage, "estimated_cost_usd": _usage_cost(usage), "model": model_name,
-		"semantic_feedback": semantic_feedback, "use_constructions": use_constructions, "morph_baseline": morph_baseline,
+		"semantic_feedback": semantic_feedback, "use_constructions": use_constructions,
+		"use_licensed_forms": use_licensed_forms, "morph_baseline": morph_baseline,
 	}
 
 
@@ -186,6 +191,7 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 				model_name=job["model_name"], semantic_feedback=job.get("semantic_feedback"),
 				require_semantic_feedback=bool(job.get("require_semantic_feedback")),
 				use_constructions=bool(job.get("use_constructions")),
+				use_licensed_forms=bool(job.get("use_licensed_forms")),
 				translation_evidence=job.get("translation_evidence"), morphology_source=job.get("morphology_source") or "predict",
 				target_dialect_ids=target_dialects, id_model=id_model, surface_model=surface_model,
 				openai_client=openai_client, progress=progress,
@@ -202,7 +208,7 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 		_job_summary(progress, completed, len(items), cost, failed, pricing_complete)
 		summary = nrdb.summary(job_id)
 		if isinstance(summary, dict):
-			summary["workflow"] = {"task": job["task"], "semantic_feedback": job.get("semantic_feedback"), "require_semantic_feedback": bool(job.get("require_semantic_feedback")), "use_constructions": bool(job.get("use_constructions")), "completed": completed, "failed": failed, "estimated_cost_usd": cost, "pricing_complete": pricing_complete, "scope": bundle.get("scope", {})}
+			summary["workflow"] = {"task": job["task"], "semantic_feedback": job.get("semantic_feedback"), "require_semantic_feedback": bool(job.get("require_semantic_feedback")), "use_constructions": bool(job.get("use_constructions")), "use_licensed_forms": bool(job.get("use_licensed_forms")), "completed": completed, "failed": failed, "estimated_cost_usd": cost, "pricing_complete": pricing_complete, "scope": bundle.get("scope", {})}
 		return summary
 	except BaseException as error:
 		nrdb.set_job_status(job_id, "failed", str(error))
