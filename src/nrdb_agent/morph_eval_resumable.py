@@ -4,13 +4,14 @@ import random
 from pathlib import Path
 
 from .dataset_io import write_json, write_tsv
+from .licensed_agent import LicensedTaskAwareAnnotationAgent
 from .metrics import annotation_metrics, segmentation_metrics
 from .morph_eval import _paired_summary, _result_row, _run_contract
 from .task_agent import SEMANTIC_FEEDBACK_MODES, TaskAwareAnnotationAgent
 from .usage import UsageTracker, tracked_client
 
 
-CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v5"
+CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v6"
 TRANSLATION_FILTERS = {"any", "present", "absent"}
 
 
@@ -132,7 +133,8 @@ def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
 
 
 def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_model, id_model,
-	semantic_feedback, require_semantic_feedback, translation_filter, evidence_exclusion):
+	semantic_feedback, require_semantic_feedback, translation_filter, evidence_exclusion,
+	use_licensed_forms):
 	return {
 		"record_type": "meta",
 		"format": CHECKPOINT_FORMAT,
@@ -150,6 +152,7 @@ def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_m
 		"require_semantic_feedback": bool(require_semantic_feedback),
 		"translation_filter": str(translation_filter),
 		"evidence_exclusion": evidence_exclusion,
+		"use_licensed_forms": bool(use_licensed_forms),
 	}
 
 
@@ -160,6 +163,7 @@ def _verify_checkpoint(expected, actual):
 		"format", "morph_run", "train_path", "datasets", "text_internal_id", "cohort_sentence_ids",
 		"limit", "seed", "agent_model", "expected_morph_model", "id_model",
 		"semantic_feedback", "require_semantic_feedback", "translation_filter", "evidence_exclusion",
+		"use_licensed_forms",
 	):
 		if actual.get(key) != expected.get(key):
 			raise ValueError("checkpoint does not match this evaluation: {} differs".format(key))
@@ -169,10 +173,11 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 	dataset_ids=None, expected_morph_model=None, id_model=None, output=None, checkpoint=None,
 	resume=False, semantic_feedback="none", require_semantic_feedback=False,
 	translation_filter="any", text_internal_id=None, evidence_exclude_datasets=None,
-	evidence_exclude_texts=None, evidence_exclude_sentence_ranges=None,
+	evidence_exclude_texts=None, evidence_exclude_sentence_ranges=None, use_licensed_forms=False,
 	openai_client=None, progress=print):
 	semantic_feedback = str(semantic_feedback or "none")
 	translation_filter = str(translation_filter or "any")
+	use_licensed_forms = bool(use_licensed_forms)
 	if semantic_feedback not in SEMANTIC_FEEDBACK_MODES:
 		raise ValueError("invalid semantic_feedback: {}".format(semantic_feedback))
 	if translation_filter not in TRANSLATION_FILTERS:
@@ -205,10 +210,12 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 	progress("evidence exclusion: datasets={} texts={} sentence_ranges={}".format(
 		evidence_exclusion["datasets"], evidence_exclusion["texts"], evidence_exclusion["sentence_ranges"],
 	))
+	progress("licensed forms: {}".format("on" if use_licensed_forms else "off"))
 	checkpoint_path = _checkpoint_path(output=output, checkpoint=checkpoint)
 	expected_meta = _checkpoint_meta(
 		contract, cohort, model_name, limit, seed, expected_morph_model, id_model,
 		semantic_feedback, require_semantic_feedback, translation_filter, evidence_exclusion,
+		use_licensed_forms,
 	)
 
 	existing_meta, existing_rows = _load_checkpoint(checkpoint_path)
@@ -262,17 +269,20 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 			"task": "morph",
 			"semantic_feedback": semantic_feedback,
 			"require_semantic_feedback": bool(require_semantic_feedback),
+			"use_licensed_forms": use_licensed_forms,
 			"morphology_source": "predict",
 			"produce_translation": False,
 			"blind_translation": False,
 		}
-		agent = TaskAwareAnnotationAgent(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
+		agent_class = LicensedTaskAwareAnnotationAgent if use_licensed_forms else TaskAwareAnnotationAgent
+		agent = agent_class(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
 		agent_result = agent.annotate(item, job, baseline)
 		usage = tracker.summary()
 		agent_metrics = annotation_metrics(agent_result.get("annotation"), source["gold_annotation"])
 		agent_seg = segmentation_metrics(agent_result.get("segmented"), source["gold_segmented"])
 		row = _result_row(source, baseline, agent_result, usage, baseline_metrics, agent_metrics, baseline_seg, agent_seg)
 		row["semantic_feedback"] = semantic_feedback
+		row["use_licensed_forms"] = int(use_licensed_forms)
 		row["existing_translation_present"] = int(bool(existing_translation))
 		row["internal_text_id"] = source.get("internal_text_id") or ""
 		row["evidence_exclusion_json"] = json.dumps(evidence_exclusion, ensure_ascii=False, separators=(",", ":"))
@@ -294,7 +304,7 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 	total_cost = sum(float(row.get("agent_cost_usd") or 0.0) for row in results)
 	pricing_complete = all(bool(row.get("agent_pricing_complete")) for row in results)
 	summary.update({
-		"format": "nrdb-agent.morph-ceiling-eval.v7",
+		"format": "nrdb-agent.morph-ceiling-eval.v8",
 		"morph_run": contract["run_dir"],
 		"train_rows": contract["train_rows"],
 		"train_rows_missing_identity": contract["train_rows_missing_identity"],
@@ -311,6 +321,7 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		"semantic_feedback": semantic_feedback,
 		"require_semantic_feedback": bool(require_semantic_feedback),
 		"translation_filter": translation_filter,
+		"use_licensed_forms": use_licensed_forms,
 		"evidence_exclusion": evidence_exclusion,
 		"estimated_cost_usd": total_cost,
 		"pricing_complete": pricing_complete,
