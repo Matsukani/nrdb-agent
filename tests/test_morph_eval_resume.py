@@ -50,6 +50,7 @@ def _meta(**values):
 		"require_semantic_feedback": False,
 		"translation_filter": "any",
 		"evidence_exclusion": {"datasets": [], "texts": [], "sentence_ranges": []},
+		"use_licensed_forms": False,
 	}
 	base.update(values)
 	return base
@@ -76,6 +77,13 @@ def test_checkpoint_translation_filter_is_part_of_experiment_identity():
 	expected = _meta(translation_filter="present")
 	actual = _meta(translation_filter="any")
 	with pytest.raises(ValueError, match="translation_filter differs"):
+		_verify_checkpoint(expected, actual)
+
+
+def test_checkpoint_licensed_mode_is_part_of_experiment_identity():
+	expected = _meta(use_licensed_forms=True)
+	actual = _meta(use_licensed_forms=False)
+	with pytest.raises(ValueError, match="use_licensed_forms differs"):
 		_verify_checkpoint(expected, actual)
 
 
