@@ -3,8 +3,11 @@ from copy import deepcopy
 from .annotator_v9 import AnnotationAgentV9
 
 
+SEMANTIC_FEEDBACK_MODES = {"none", "generated", "existing", "auto"}
+
+
 class TaskAwareAnnotationAgent(AnnotationAgentV9):
-	"""Expose orthogonal morphology, human-translation review, and frozen translation phases."""
+	"""Expose orthogonal morphology, semantic feedback, and translation-output phases."""
 
 	def _apply_review(self, item, result, review, evidence_key):
 		result.setdefault("evidence", {})[evidence_key] = review
@@ -38,10 +41,43 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 			"source": "human",
 			"note": "Existing human Japanese translation supplied as semantic evidence for morphology review.",
 		}
-		self.progress("  review-v9: human translation consistency review")
+		self.progress("  review-v9: existing translation semantic consistency review")
 		review = self._semantic_review(item, job, review_input)
-		result = self._apply_review(item, result, review, "human_translation_review")
-		result.setdefault("evidence", {})["shared_evidence"] = self._shared_evidence_compact()
+		result = self._apply_review(item, result, review, "existing_translation_review")
+		result.setdefault("evidence", {})["semantic_feedback"] = {
+			"mode": "existing",
+			"source": "human",
+			"translation_jp": human_translation,
+		}
+		result["evidence"]["shared_evidence"] = self._shared_evidence_compact()
+		return result
+
+	def _generate_translation(self, item, job, result):
+		translation_item = dict(item)
+		# Existing Japanese may constrain morphology but must never leak into the
+		# generated-translation phase itself.
+		translation_item["translation_jp"] = None
+		translation_job = dict(job)
+		translation_job["produce_translation"] = True
+		return self._translate_frozen_v7(translation_item, translation_job, result)
+
+	def _review_against_generated_translation(self, item, job, result, translation):
+		review_input = deepcopy(result)
+		review_input["trsl_ai"] = translation["trsl_ai"]
+		review_input.setdefault("evidence", {})["translation"] = translation["translation_evidence"]
+		review_input["evidence"]["translation"]["confidence"] = translation["confidence"]
+		review_input["evidence"]["translation"]["source"] = "generated"
+		self.progress("  review-v9: generated translation semantic consistency review")
+		review = self._semantic_review(item, job, review_input)
+		result = self._apply_review(item, result, review, "generated_translation_review")
+		result.setdefault("evidence", {})["semantic_feedback"] = {
+			"mode": "generated",
+			"source": "generated",
+			"translation_jp": translation["trsl_ai"],
+			"confidence": translation["confidence"],
+			"translation_evidence": translation["translation_evidence"],
+		}
+		result["evidence"]["shared_evidence"] = self._shared_evidence_compact()
 		return result
 
 	def _baseline_fallback(self, morph_result, reason, progress_message):
@@ -79,13 +115,34 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 			"  forward-v9: malformed/empty final JSON; keeping nrdb-morph baseline as uncertain",
 		)
 
+	@staticmethod
+	def _semantic_policy(job, human_translation):
+		mode = job.get("semantic_feedback")
+		require = bool(job.get("require_semantic_feedback"))
+		if not mode:
+			# Backward compatibility for jobs created before semantic_feedback became
+			# an orthogonal workflow axis.
+			legacy = str(job.get("translation_evidence") or "ignore")
+			if legacy == "required":
+				mode = "existing"
+				require = True
+			elif legacy == "use":
+				mode = "existing"
+			else:
+				mode = "none"
+		mode = str(mode)
+		if mode not in SEMANTIC_FEEDBACK_MODES:
+			raise ValueError("invalid semantic_feedback mode: {}".format(mode))
+		active = mode
+		if mode == "auto":
+			active = "existing" if human_translation else "generated"
+		return mode, active, require
+
 	def annotate(self, item, job, morph_result):
-		policy = str(job.get("translation_evidence") or "ignore")
-		if policy not in {"ignore", "use", "required"}:
-			raise ValueError("invalid translation_evidence policy: {}".format(policy))
 		human_translation = str(item.get("translation_jp") or "").strip()
-		if policy == "required" and not human_translation:
-			raise ValueError("human translation is required for this morphology task")
+		semantic_mode, active_feedback, require_feedback = self._semantic_policy(job, human_translation)
+		if active_feedback == "existing" and require_feedback and not human_translation:
+			raise ValueError("semantic_feedback=existing is required but this item has no existing translation")
 
 		try:
 			result = self._annotation_phase_v9(item, job, morph_result)
@@ -98,29 +155,35 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 			# after a valid sequence of tool calls. Never discard a paid row for a
 			# formatting failure: preserve the specialized morph baseline instead.
 			result = self._malformed_final_fallback(morph_result, error)
-		human_reviewed = False
-		if policy in {"use", "required"} and human_translation and result.get("annotation") and result.get("decision") != "failed":
-			result = self._review_against_human_translation(item, job, result)
-			human_reviewed = True
+
+		generated_feedback = None
+		generated_feedback_matches_final = False
+		if result.get("annotation") and result.get("decision") != "failed":
+			if active_feedback == "existing" and human_translation:
+				result = self._review_against_human_translation(item, job, result)
+			elif active_feedback == "generated":
+				before = (result.get("segmented"), result.get("annotation"))
+				generated_feedback = self._generate_translation(item, job, result)
+				result = self._review_against_generated_translation(item, job, result, generated_feedback)
+				after = (result.get("segmented"), result.get("annotation"))
+				generated_feedback_matches_final = before == after
+			elif semantic_mode != "none" and require_feedback:
+				raise ValueError("required semantic feedback could not be produced")
 
 		if job.get("produce_translation") and result.get("annotation") and result.get("decision") != "failed":
-			translation_item = dict(item)
-			# Existing Japanese is evidence for morphology only. Never expose the target
-			# translation to the generation phase itself.
-			translation_item["translation_jp"] = None
-			translation = self._translate_frozen_v7(translation_item, job, result)
+			# Reuse the internally generated translation only if semantic review kept
+			# the morphology unchanged. If morphology changed, regenerate from the
+			# final analysis so output and annotation cannot diverge.
+			if generated_feedback is not None and generated_feedback_matches_final:
+				translation = generated_feedback
+			else:
+				translation = self._generate_translation(item, job, result)
 			result["trsl_ai"] = translation["trsl_ai"]
 			result.setdefault("evidence", {})["translation"] = translation["translation_evidence"]
 			result["evidence"]["translation"]["confidence"] = translation["confidence"]
 		else:
+			# Generated feedback is internal evidence when the requested task is morph.
 			result["trsl_ai"] = ""
-
-		# If a human translation already constrained morphology, do not immediately
-		# re-open the same morphology using the model-generated Japanese translation.
-		if not human_reviewed and result.get("trsl_ai") and result.get("decision") != "failed":
-			review = self._semantic_review(item, job, result)
-			result = self._apply_review(item, result, review, "semantic_review")
-			result.setdefault("evidence", {})["shared_evidence"] = self._shared_evidence_compact()
 		return result
 
 	def translate_frozen(self, item, job, segmented, annotation, confidence=1.0):
@@ -139,11 +202,7 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 			"confidence": float(confidence),
 			"evidence": {"existing_morphology": {"frozen": True, "validation": validation}},
 		}
-		translation_item = dict(item)
-		translation_item["translation_jp"] = None
-		translation_job = dict(job)
-		translation_job["produce_translation"] = True
-		translation = self._translate_frozen_v7(translation_item, translation_job, base)
+		translation = self._generate_translation(item, job, base)
 		base["trsl_ai"] = translation["trsl_ai"]
 		base["confidence"] = translation["confidence"]
 		base["evidence"]["translation"] = translation["translation_evidence"]
