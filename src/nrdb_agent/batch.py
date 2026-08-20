@@ -93,17 +93,26 @@ def export_job_results_tsv(nrdb, job_id, output):
 	payload = nrdb.job_results(job_id)
 	rows = []
 	for value in payload.get("results", []):
-		usage = (value.get("evidence") or {}).get("api_usage") or {}
+		evidence = value.get("evidence") or value.get("evidence_json") or {}
+		usage = evidence.get("api_usage") or {}
 		cost = (usage.get("totals") or {}).get("estimated_cost_usd")
+		baseline = evidence.get("morph_baseline") if isinstance(evidence.get("morph_baseline"), dict) else {}
+		inference = baseline.get("inference") if isinstance(baseline.get("inference"), dict) else {}
 		rows.append({
 			"sentence_id": value.get("sentence_id"), "example_id": value.get("example_id"),
 			"source_text": value.get("source_text"), "human_translation_jp": value.get("translation_jp"),
+			"morph_segmented": baseline.get("segmented", ""),
+			"morph_annotation": baseline.get("annotation", ""),
+			"morph_source": baseline.get("source", ""),
+			"morph_model_id": inference.get("model_id", ""),
+			"morph_model_label": inference.get("model_label", ""),
+			"morph_inference_json": json.dumps(inference, ensure_ascii=False, separators=(",", ":")) if inference else "",
 			"ai_segmented": value.get("ai_segmented"), "ai_annotation": value.get("ai_annotation"),
 			"ai_translation": value.get("trsl_ai"), "ai_cost_usd": cost if cost is not None else "",
 			"decision": value.get("decision"), "confidence": value.get("confidence"),
 			"gold_segmented": value.get("gold_segmented"), "gold_annotation": value.get("gold_annotation"),
 			"gold_translation_jp": value.get("gold_translation_jp"), "exact_match": value.get("exact_match"),
-			"evidence_json": json.dumps(value.get("evidence") or value.get("evidence_json") or {}, ensure_ascii=False, separators=(",", ":")),
+			"evidence_json": json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
 		})
 	write_tsv(output, rows)
 	return {"output": str(output), "rows": len(rows), "job_id": int(job_id)}
