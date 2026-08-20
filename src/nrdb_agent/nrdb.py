@@ -78,14 +78,16 @@ class NrdbClient:
 
 	def create_workflow_job(self, dataset_id, task, limit, model_name, selection_seed=1,
 		semantic_feedback="none", require_semantic_feedback=False, use_constructions=False,
-		morphology_source="predict", needs_filter="any", scope_text_id=None,
-		scope_sentence_start=None, scope_sentence_end=None, translation_evidence=None):
+		use_licensed_forms=False, morphology_source="predict", needs_filter="any",
+		scope_text_id=None, scope_sentence_start=None, scope_sentence_end=None,
+		translation_evidence=None):
 		payload = {
 			"dataset_id": int(dataset_id), "task": str(task), "limit": int(limit),
 			"model_name": str(model_name), "selection_seed": int(selection_seed),
 			"semantic_feedback": str(semantic_feedback),
 			"require_semantic_feedback": bool(require_semantic_feedback),
 			"use_constructions": bool(use_constructions),
+			"use_licensed_forms": bool(use_licensed_forms),
 			"morphology_source": str(morphology_source), "needs_filter": str(needs_filter),
 			"scope_text_id": scope_text_id, "scope_sentence_start": scope_sentence_start,
 			"scope_sentence_end": scope_sentence_end,
