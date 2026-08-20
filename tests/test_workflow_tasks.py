@@ -17,17 +17,21 @@ class FakeNrdb:
 
 
 class FakeAgent:
+	last_job = None
+
 	def __init__(self, nrdb, model_name, **kwargs):
 		self.nrdb = nrdb
 		self.model_name = model_name
 
 	def translate_frozen(self, item, job, segmented, annotation, confidence=1.0):
+		type(self).last_job = dict(job)
 		return {
 			"segmented": segmented, "annotation": annotation, "trsl_ai": "訳",
 			"decision": "proposed", "confidence": 0.9, "evidence": {"frozen": True},
 		}
 
 	def annotate(self, item, job, morph):
+		type(self).last_job = dict(job)
 		return {
 			"segmented": morph["segmented"], "annotation": morph["annotation"],
 			"trsl_ai": "訳" if job.get("produce_translation") else "",
@@ -52,6 +56,19 @@ def test_translate_existing_skips_morph_model(monkeypatch):
 	assert result["annotation"] == "gold-ann"
 	assert result["translation"] == "訳"
 	assert result["morph_baseline"]["source"] == "existing"
+
+
+def test_translate_threads_construction_mode_independently(monkeypatch):
+	monkeypatch.setattr(workflow, "TaskAwareAnnotationAgent", FakeAgent)
+	FakeAgent.last_job = None
+	nrdb = FakeNrdb()
+	result = workflow.execute_item(
+		nrdb, _item(), "translate", 2, "宮古",
+		morphology_source="existing", semantic_feedback="none", use_constructions=True,
+	)
+	assert FakeAgent.last_job["semantic_feedback"] == "none"
+	assert FakeAgent.last_job["use_constructions"] is True
+	assert result["use_constructions"] is True
 
 
 def test_auto_uses_existing_but_predict_calls_morph(monkeypatch):
