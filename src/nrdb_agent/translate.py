@@ -1,6 +1,7 @@
 import json
 import os
 
+from .licensed_agent import LicensedTaskAwareAnnotationAgent
 from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
@@ -68,11 +69,12 @@ def _annotate_with_json_retry(agent, item, job, morph, progress):
 
 def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None,
 	model_name="gpt-5.6", surface_model=None, id_model=None, semantic_feedback="generated",
-	require_semantic_feedback=False, use_constructions=False, existing_translation=None,
-	openai_client=None, progress=print):
+	require_semantic_feedback=False, use_constructions=False, use_licensed_forms=False,
+	existing_translation=None, openai_client=None, progress=print):
 	text = str(text or "").strip()
 	region = str(region or "").strip()
 	use_constructions = bool(use_constructions)
+	use_licensed_forms = bool(use_licensed_forms)
 	if not text:
 		raise ValueError("translation text cannot be empty")
 	if not region:
@@ -98,11 +100,17 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 		existing_translation = str(existing_translation or "").strip()
 		if semantic_feedback == "existing" and require_semantic_feedback and not existing_translation:
 			raise ValueError("semantic_feedback=existing requires --existing-translation")
-		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} forward=annotation-v9 model={} semantic_feedback={} constructions={}".format(
-			region, dialect_id, annotation_schema_id, model_name, semantic_feedback, "on" if use_constructions else "off",
+		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} forward=annotation-v9 model={} semantic_feedback={} constructions={} licensed={}".format(
+			region, dialect_id, annotation_schema_id, model_name, semantic_feedback,
+			"on" if use_constructions else "off", "on" if use_licensed_forms else "off",
 		))
 		progress("  morph: analyze")
 		morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
+		licensed = None
+		if use_licensed_forms:
+			licensed = nrdb.licensed_forms_in_text(text, annotation_schema_id, region, dialect_id)
+			morph["licensed_realizations"] = licensed
+			progress("  licensed: grammar-derived surface matches={}".format(len(licensed.get("matches", []))))
 		_trace_morph_provenance(progress, morph)
 		progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
 		if id_model:
@@ -112,11 +120,14 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			"annotation_schema_id": annotation_schema_id, "model_name": model_name,
 			"prompt_version": "annotation-v9", "task": "morph-translate",
 			"semantic_feedback": semantic_feedback, "require_semantic_feedback": bool(require_semantic_feedback),
-			"use_constructions": use_constructions,
+			"use_constructions": use_constructions, "use_licensed_forms": use_licensed_forms,
 			"morphology_source": "predict", "produce_translation": True, "blind_translation": False,
 		}
-		agent = TaskAwareAnnotationAgent(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
+		agent_class = LicensedTaskAwareAnnotationAgent if use_licensed_forms else TaskAwareAnnotationAgent
+		agent = agent_class(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
 		result = _annotate_with_json_retry(agent, item, job, morph, progress)
+		if licensed is not None:
+			result.setdefault("evidence", {})["licensed_realizations"] = licensed
 		usage = usage_tracker.summary()
 		_trace_usage(progress, usage)
 		return {
@@ -124,13 +135,14 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			"annotation_schema_id": annotation_schema_id, "morph_dialect_id": dialect_id,
 			"morph_inference": _morph_provenance(morph), "llm_model": model_name,
 			"semantic_feedback": semantic_feedback, "use_constructions": use_constructions,
+			"use_licensed_forms": use_licensed_forms,
 			"segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""),
 			"translation": result.get("trsl_ai", ""), "decision": result.get("decision"),
 			"confidence": result.get("confidence"), "api_usage": usage, "evidence": result.get("evidence", {}),
 		}
 
-	if semantic_feedback != "none" or require_semantic_feedback or use_constructions:
-		raise ValueError("semantic feedback and constructions are not used for Japanese -> Miyako direct translation")
+	if semantic_feedback != "none" or require_semantic_feedback or use_constructions or use_licensed_forms:
+		raise ValueError("semantic feedback, constructions and licensed forms are not used for Japanese -> Miyako direct translation")
 	if not dialect_ids:
 		raise ValueError("Japanese -> Miyako translation requires an ordered --dialects list")
 	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
