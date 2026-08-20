@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from nrdb_agent.morph_eval_resumable import _checkpoint_meta, _load_checkpoint, _verify_checkpoint
+from nrdb_agent.morph_eval_resumable import CHECKPOINT_FORMAT, _load_checkpoint, _verify_checkpoint
 from nrdb_agent.task_agent import TaskAwareAnnotationAgent
 
 
@@ -23,7 +23,7 @@ def test_malformed_final_keeps_baseline():
 	agent = MalformedFinalAgent()
 	result = agent.annotate(
 		{"translation_jp": ""},
-		{"translation_evidence": "ignore", "produce_translation": False},
+		{"semantic_feedback": "none", "produce_translation": False},
 		{"segmented": "a-b", "annotation": "A-B"},
 	)
 	assert result["segmented"] == "a-b"
@@ -32,11 +32,10 @@ def test_malformed_final_keeps_baseline():
 	assert result["evidence"]["v9_fallback"]["kept_baseline"] is True
 
 
-def test_checkpoint_loader_preserves_completed_rows(tmp_path):
-	path = tmp_path / "eval.tsv.checkpoint.jsonl"
-	meta = {
+def _meta(**values):
+	base = {
 		"record_type": "meta",
-		"format": "nrdb-agent.morph-ceiling-checkpoint.v1",
+		"format": CHECKPOINT_FORMAT,
 		"morph_run": "/run",
 		"train_path": "/run/train.jsonl",
 		"datasets": [30],
@@ -46,7 +45,17 @@ def test_checkpoint_loader_preserves_completed_rows(tmp_path):
 		"agent_model": "gpt-5.6-sol",
 		"expected_morph_model": "morph-v1",
 		"id_model": "/run/id.json",
+		"semantic_feedback": "none",
+		"require_semantic_feedback": False,
+		"translation_filter": "any",
 	}
+	base.update(values)
+	return base
+
+
+def test_checkpoint_loader_preserves_completed_rows(tmp_path):
+	path = tmp_path / "eval.tsv.checkpoint.jsonl"
+	meta = _meta()
 	row = {"record_type": "row", "row": {"sentence_id": 10, "agent_cost_usd": 0.2}}
 	path.write_text(json.dumps(meta) + "\n" + json.dumps(row) + "\n", encoding="utf-8")
 	loaded_meta, rows = _load_checkpoint(path)
@@ -55,7 +64,14 @@ def test_checkpoint_loader_preserves_completed_rows(tmp_path):
 
 
 def test_checkpoint_mismatch_refuses_resume():
-	expected = {"format": "x", "morph_run": "/a"}
-	actual = {"format": "x", "morph_run": "/b"}
-	with pytest.raises(ValueError, match="morph_run differs"):
+	expected = _meta(semantic_feedback="none")
+	actual = _meta(semantic_feedback="generated")
+	with pytest.raises(ValueError, match="semantic_feedback differs"):
+		_verify_checkpoint(expected, actual)
+
+
+def test_checkpoint_translation_filter_is_part_of_experiment_identity():
+	expected = _meta(translation_filter="present")
+	actual = _meta(translation_filter="any")
+	with pytest.raises(ValueError, match="translation_filter differs"):
 		_verify_checkpoint(expected, actual)
