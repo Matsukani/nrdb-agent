@@ -17,6 +17,23 @@ class NrdbClient:
 		self.morph_url = (morph_url or os.environ.get("NRDB_MORPH_URL") or "http://127.0.0.1:8765").rstrip("/")
 		self.http = JsonHttpClient(timeout=timeout)
 		self.exclude_job_id = 0
+		self.evidence_exclusion = {"datasets": [], "texts": [], "sentence_ranges": []}
+
+	def set_evidence_exclusion(self, datasets=None, texts=None, sentence_ranges=None):
+		self.evidence_exclusion = {
+			"datasets": sorted({int(value) for value in (datasets or []) if int(value) > 0}),
+			"texts": sorted({(int(dataset_id), int(text_id)) for dataset_id, text_id in (texts or []) if int(dataset_id) > 0 and int(text_id) > 0}),
+			"sentence_ranges": sorted({(int(dataset_id), int(start), int(end)) for dataset_id, start, end in (sentence_ranges or []) if int(dataset_id) > 0 and int(start) > 0 and int(end) >= int(start)}),
+		}
+		return dict(self.evidence_exclusion)
+
+	def _evidence_exclusion_params(self):
+		scope = self.evidence_exclusion or {}
+		return {
+			"exclude_dataset_ids": ",".join(str(value) for value in scope.get("datasets", [])),
+			"exclude_texts": ",".join("{}:{}".format(dataset_id, text_id) for dataset_id, text_id in scope.get("texts", [])),
+			"exclude_sentence_ranges": ",".join("{}:{}:{}".format(dataset_id, start, end) for dataset_id, start, end in scope.get("sentence_ranges", [])),
+		}
 
 	def _agent_get(self, action, **params):
 		payload = self.http.get(self.agent_url, {"action": action, **params})
@@ -135,7 +152,12 @@ class NrdbClient:
 			return {"success": True, "label": "{} [QUERY_REJECTED: {}]".format(label[:160], reason), "examples": [], "query_rejected": True, "error": reason, "segment_count": segment_count}
 		if exclude_job_id is None:
 			exclude_job_id = self.exclude_job_id
-		return self._evidence_get("examples", label=label, annotation_schema_id=int(annotation_schema_id), exclude_sentence_id=int(exclude_sentence_id), exclude_job_id=int(exclude_job_id or 0), limit=int(limit))
+		params = {
+			"label": label, "annotation_schema_id": int(annotation_schema_id),
+			"exclude_sentence_id": int(exclude_sentence_id), "exclude_job_id": int(exclude_job_id or 0),
+			"limit": int(limit), **self._evidence_exclusion_params(),
+		}
+		return self._evidence_get("examples", **params)
 
 	def search_japanese_evidence(self, query, annotation_schema_id, exclude_sentence_id, exclude_job_id=None, region=None, dialect_ids=None, limit=8):
 		if exclude_job_id is None:
@@ -164,11 +186,17 @@ class NrdbClient:
 			"exclude_job_id": int(exclude_job_id or 0),
 		})
 		if not payload.get("success"):
-			raise RuntimeError(payload.get("error") or "NRDB reverse surface evidence API failed")
+			raise RuntimeError(payload.get("error") or "NRDB reverse surface evidence failed")
 		return payload
 
-	def form_id_support(self, surface, candidate_id, region, annotation_schema_id):
-		payload = self.http.get(self.form_support_url, {"surface": surface, "candidate_id": candidate_id, "region": region, "annotation_schema_id": int(annotation_schema_id)})
+	def form_id_support(self, surface, candidate_id, region, annotation_schema_id, exclude_sentence_id=0):
+		params = {
+			"surface": surface, "candidate_id": candidate_id, "region": region,
+			"annotation_schema_id": int(annotation_schema_id),
+			"exclude_sentence_id": int(exclude_sentence_id or 0),
+			**self._evidence_exclusion_params(),
+		}
+		payload = self.http.get(self.form_support_url, params)
 		if not payload.get("success"):
 			raise RuntimeError(payload.get("error") or "NRDB form-ID support API failed")
 		return payload
