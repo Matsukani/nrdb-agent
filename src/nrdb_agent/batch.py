@@ -13,8 +13,9 @@ def _pricing_complete(result):
 def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None,
 	annotation_schema_id=None, region=None, default_dialect_id=None,
 	semantic_feedback="none", require_semantic_feedback=False, use_constructions=False,
-	morphology_source="predict", needs="any", target_dialect_ids=None, id_model=None,
-	surface_model=None, output=None, limit=None, progress=print, translation_evidence=None):
+	use_licensed_forms=False, morphology_source="predict", needs="any",
+	target_dialect_ids=None, id_model=None, surface_model=None, output=None, limit=None,
+	progress=print, translation_evidence=None):
 	bundle = load_dataset(
 		input_path, component=component, annotation_schema_id=annotation_schema_id,
 		region=region, default_dialect_id=default_dialect_id,
@@ -49,7 +50,7 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 				nrdb, item, task, bundle["annotation_schema_id"], bundle["region"],
 				model_name=model_name, semantic_feedback=semantic_feedback,
 				require_semantic_feedback=require_semantic_feedback,
-				use_constructions=use_constructions,
+				use_constructions=use_constructions, use_licensed_forms=use_licensed_forms,
 				translation_evidence=translation_evidence,
 				morphology_source=morphology_source, target_dialect_ids=target_dialect_ids,
 				id_model=id_model, surface_model=surface_model, progress=progress,
@@ -74,8 +75,8 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 		"dataset": bundle.get("dataset", {}), "component": bundle.get("component"),
 		"task": task, "annotation_schema_id": bundle["annotation_schema_id"], "region": bundle["region"],
 		"semantic_feedback": semantic_feedback, "require_semantic_feedback": bool(require_semantic_feedback),
-		"use_constructions": bool(use_constructions), "morphology_source": morphology_source,
-		"needs": needs, "model": model_name,
+		"use_constructions": bool(use_constructions), "use_licensed_forms": bool(use_licensed_forms),
+		"morphology_source": morphology_source, "needs": needs, "model": model_name,
 		"counts": {"input": len(bundle["items"]), "selected": len(selected), "completed": completed, "failed": failed},
 		"estimated_cost_usd": cost, "pricing_complete": pricing_complete, "rows": rows,
 	}
