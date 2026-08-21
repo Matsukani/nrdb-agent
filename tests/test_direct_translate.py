@@ -29,8 +29,8 @@ class FakeNrdb:
 			},
 		}
 
-	def licensed_forms_in_text(self, text, annotation_schema_id, region, dialect_id):
-		self.licensed_calls.append((text, annotation_schema_id, region, dialect_id))
+	def licensed_forms_in_text(self, text, annotation_schema_id, region, dialect_id, surfaces=None):
+		self.licensed_calls.append((text, annotation_schema_id, region, dialect_id, list(surfaces or [])))
 		return {
 			"evidence_type": "grammar_licensed_not_observed",
 			"matches": [{
@@ -167,7 +167,7 @@ def test_direct_miyako_to_japanese_prefetches_licensed_forms(monkeypatch):
 	result = translate_module.translate_text(
 		nrdb, "unu numai", "japanese", 2, "宮古", use_licensed_forms=True, progress=messages.append,
 	)
-	assert nrdb.licensed_calls == [("unu numai", 2, "宮古", 22)]
+	assert nrdb.licensed_calls == [("unu numai", 2, "宮古", 22, ["mi", "ja"])]
 	assert result["use_licensed_forms"] is True
 	assert result["evidence"]["licensed_realizations"]["matches"][0]["form_romaji_seg"] == "num-ai"
 	assert any("licensed: grammar-derived surface matches=1" in message for message in messages)

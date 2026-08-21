@@ -135,7 +135,8 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
 		licensed = None
 		if use_licensed_forms:
-			licensed = nrdb.licensed_forms_in_text(text, annotation_schema_id, region, dialect_id)
+			surfaces = [segment for phrase in str(morph.get("segmented") or "").split() for segment in phrase.split("-") if segment]
+			licensed = nrdb.licensed_forms_in_text(text, annotation_schema_id, region, dialect_id, surfaces=surfaces)
 			morph["licensed_realizations"] = licensed
 			progress("  licensed: grammar-derived surface matches={}".format(len(licensed.get("matches", []))))
 		if not use_fixed_morphology:

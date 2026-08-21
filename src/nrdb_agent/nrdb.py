@@ -1,3 +1,4 @@
+import json
 import os
 
 from .http import JsonHttpClient
@@ -214,9 +215,10 @@ class NrdbClient:
 			raise RuntimeError(payload.get("error") or "NRDB construction lookup failed")
 		return payload
 
-	def licensed_forms_in_text(self, text, annotation_schema_id, region, dialect_id):
+	def licensed_forms_in_text(self, text, annotation_schema_id, region, dialect_id, surfaces=None):
 		payload = self.http.get(self.licensed_forms_url, {
 			"text": str(text or "").strip(),
+			"surfaces": json.dumps(list(surfaces or []), ensure_ascii=False, separators=(",", ":")),
 			"annotation_schema_id": int(annotation_schema_id),
 			"region": str(region or "").strip(),
 			"dialect_id": int(dialect_id),

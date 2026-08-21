@@ -307,6 +307,9 @@ class AnnotationAgentV9(AnnotationAgentV8):
 			"uncertainty_reasons": self._forward_hotspots["uncertainty_reasons"],
 			"id_sequence_review": self._forward_hotspots["id_sequence_review"],
 		}
+		for key in ("licensed_repair_candidates", "licensed_repair_audit"):
+			if self._forward_hotspots.get(key) is not None:
+				compact_hotspots[key] = self._forward_hotspots[key]
 		self.progress("  forward-v9: uncertainty triage id_hotspots={} uncertain_surfaces={}".format(
 			len(compact_hotspots["hotspot_ids"]), len(compact_hotspots["uncertain_surfaces"]),
 		))

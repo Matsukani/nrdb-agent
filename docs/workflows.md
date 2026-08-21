@@ -51,6 +51,12 @@ No extra LLM tool round is spent on the grammatical pass: NRDB retrieves rows de
 
 Candidate rows can be researched from CPS and exported for human review with [`nrdb-agent id-analysis`](id-analysis.md). That workflow never writes directly to the curated table.
 
+## Licensed generated forms
+
+`--licensed` treats human-licensed `generated_wordforms` rows as grammatical evidence for forward morphology. Retrieval has two ordered paths: exact lookup against the current decoder surface segments, followed by containment lookup against the unsegmented source text for cases where the decoder boundary is wrong. Returned evidence includes its retrieval path and source-text offsets.
+
+An exact, same-dialect licensed form may deterministically replace one `?` decoder segment only when its licensed segmentation and annotation align, no competing licensed analysis exists, and the complete revised analysis passes `nrdb-morph` structural validation. Regional matches, containment matches, ambiguous matches, and already analysed segments are supplied to the agent as structured candidates instead of being silently rewritten. Licensed evidence is also carried into semantic review. `evidence.licensed_form_audit` records the pre-LLM repair decision and which retrieved forms occur in the final analysis.
+
 ## Task semantics
 
 ### `morph`
