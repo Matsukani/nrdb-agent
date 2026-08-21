@@ -28,15 +28,16 @@ If generated semantic feedback revises morphology and Japanese translation is al
 
 `--constructions` adds an explicit grammatical pass before Miyako -> Japanese generation. It is orthogonal to semantic feedback and morphology source.
 
-The NRDB table `annotation_constructions` stores schema/region/dialect-scoped rows with:
+The backward-compatible NRDB table `annotation_constructions` stores schema/region/dialect-scoped grammatical-knowledge rows with:
 
+- `entry_type`: `morpheme` for the default function of one exact ID, or `construction` for a contextual specialization;
 - `trigger_id`: one exact atomic annotation ID used for cheap candidate retrieval;
 - `pattern`: a lightweight pattern over the frozen NRDB annotation;
 - `meaning_jp`: the construction-level Japanese interpretation;
 - `realization_jp`: a strong Japanese realization hint;
 - `note`, `priority`, and `enabled`.
 
-A trigger hit retrieves a **candidate construction only**. The translator must verify that the full pattern fits the frozen annotation before using it. When it fits, the curated construction meaning outranks a conflicting default atom-by-atom reading. This is especially useful for non-compositional Miyako grammatical sequences such as `V;cvb irr-neg`.
+An exact trigger hit applies a `morpheme` row directly. A trigger hit retrieves a `construction` row as a candidate only: the translator must verify that the full pattern fits the frozen annotation before using it. When it fits, the curated construction meaning specializes and may outrank the default morpheme or atom-by-atom reading. This is especially useful for non-compositional Miyako grammatical sequences such as `V;cvb irr-neg`.
 
 The first resource is intentionally hand-curated and rerunnable from NRDB's:
 
@@ -44,7 +45,9 @@ The first resource is intentionally hand-curated and rerunnable from NRDB's:
 sql/constructions/miyako_translation.sql
 ```
 
-No extra LLM tool round is spent on the construction pass: NRDB retrieves candidates deterministically before the first translation response. Retrieved construction candidates are preserved in translation evidence for audit.
+No extra LLM tool round is spent on the grammatical pass: NRDB retrieves rows deterministically before the first translation response. Retrieved rows are preserved in translation evidence for audit.
+
+Candidate rows can be researched from CPS and exported for human review with [`nrdb-agent id-analysis`](id-analysis.md). That workflow never writes directly to the curated table.
 
 ## Task semantics
 

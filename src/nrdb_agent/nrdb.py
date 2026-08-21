@@ -16,6 +16,7 @@ class NrdbClient:
 		self.form_support_url = os.environ.get("NRDB_AGENT_FORM_SUPPORT_URL") or base_url + "/agent_form_support.php"
 		self.reverse_evidence_url = os.environ.get("NRDB_AGENT_REVERSE_EVIDENCE_URL") or base_url + "/agent_reverse_evidence.php"
 		self.region_dialects_url = os.environ.get("NRDB_AGENT_REGION_DIALECTS_URL") or base_url + "/agent_region_dialects.php"
+		self.id_analysis_url = os.environ.get("NRDB_AGENT_ID_ANALYSIS_URL") or base_url + "/agent_id_analysis.php"
 		self.morph_url = (morph_url or os.environ.get("NRDB_MORPH_URL") or "http://127.0.0.1:8765").rstrip("/")
 		self.http = JsonHttpClient(timeout=timeout)
 		self.exclude_job_id = 0
@@ -67,6 +68,18 @@ class NrdbClient:
 			raise RuntimeError(result.get("error") or "NRDB agent workflow API failed")
 		return result
 
+	def _id_analysis_get(self, action, **params):
+		result = self.http.get(self.id_analysis_url, {"action": action, **params})
+		if not result.get("success"):
+			raise RuntimeError(result.get("error") or "NRDB ID-analysis API failed")
+		return result
+
+	def _id_analysis_post(self, action, payload):
+		result = self.http.post(self.id_analysis_url + "?action=" + action, payload)
+		if not result.get("success"):
+			raise RuntimeError(result.get("error") or "NRDB ID-analysis API failed")
+		return result
+
 	def create_job(self, dataset_id, mode, limit, model_name, prompt_version="annotation-v1", selection_seed=1, produce_translation=False, blind_translation=False):
 		return self._agent_post("create_job", {
 			"dataset_id": int(dataset_id), "mode": mode, "limit": int(limit),
@@ -98,6 +111,42 @@ class NrdbClient:
 
 	def jobs(self):
 		return self._agent_get("jobs")["jobs"]
+
+	def create_id_analysis_job(self, annotation_schema_id, target_ids, model_name, region=None,
+		dialect_id=None, research_notes=None, source_kinds=None, dataset_ids=None,
+		minimum_ngram_count=2, example_limit=30):
+		return self._id_analysis_post("create_job", {
+			"annotation_schema_id": int(annotation_schema_id),
+			"target_ids": list(target_ids),
+			"model_name": str(model_name),
+			"region": str(region or "").strip(),
+			"dialect_id": None if dialect_id in (None, "") else int(dialect_id),
+			"research_notes": dict(research_notes or {}),
+			"source_kinds": list(source_kinds or ["txt", "sen", "lxs"]),
+			"dataset_ids": [int(value) for value in (dataset_ids or [])],
+			"minimum_ngram_count": int(minimum_ngram_count),
+			"example_limit": int(example_limit),
+		})
+
+	def id_analysis_jobs(self):
+		return self._id_analysis_get("jobs")["jobs"]
+
+	def id_analysis_job(self, job_id):
+		return self._id_analysis_get("job", job_id=int(job_id))
+
+	def id_analysis_evidence(self, job_id, target_id):
+		return self._id_analysis_get("evidence", job_id=int(job_id), target_id=str(target_id))
+
+	def save_id_analysis_result(self, job_id, result, result_tsv):
+		return self._id_analysis_post("save_result", {
+			"job_id": int(job_id), "result": result, "result_tsv": str(result_tsv),
+		})
+
+	def set_id_analysis_status(self, job_id, status, error_message=None):
+		payload = {"job_id": int(job_id), "status": str(status)}
+		if error_message:
+			payload["error_message"] = str(error_message)
+		return self._id_analysis_post("set_status", payload)
 
 	def job_items(self, job_id):
 		return self._agent_get("job_items", job_id=int(job_id))

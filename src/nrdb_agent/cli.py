@@ -4,6 +4,7 @@ import json
 from .asr_review import review_asr_predictions
 from .batch import export_job_results_tsv, process_dataset
 from .cli_output import TranslationProgress, WorkflowProgress, add_output_mode_args, output_mode_from_args, silent_translation_line
+from .id_analysis import run_id_analysis_job, write_result_tsv
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
 from .runner import run_job
@@ -88,6 +89,26 @@ def _positive_count(value):
 	if value < 1:
 		raise argparse.ArgumentTypeError("count must be a positive integer")
 	return value
+
+
+def _id_analysis_notes(values, target_ids, instructions=None):
+	target_ids = set(target_ids)
+	notes = {}
+	if str(instructions or "").strip():
+		notes["*"] = str(instructions).strip()
+	for raw in values or []:
+		text = str(raw or "")
+		if "=" not in text:
+			raise ValueError("--note must use ID=TEXT")
+		target_id, note = text.split("=", 1)
+		target_id = target_id.strip()
+		note = note.strip()
+		if target_id not in target_ids:
+			raise ValueError("--note refers to an ID not requested in this job: {}".format(target_id))
+		if not note:
+			raise ValueError("--note requires non-empty text")
+		notes[target_id] = note
+	return notes
 
 
 def _semantic_settings(args):
@@ -350,6 +371,31 @@ def main():
 	results.add_argument("--show-sentences", nargs="?", const=-1, default=0, type=int, metavar="N")
 	results.add_argument("--output", default=None, help="Export results as TSV")
 
+	id_analysis = sub.add_parser("id-analysis", help="Create, run, and inspect corpus-based grammatical-ID analyses")
+	id_sub = id_analysis.add_subparsers(dest="id_analysis_command", required=True)
+	id_create = id_sub.add_parser("create", help="Create an ID-analysis job for one or more exact annotation IDs")
+	id_create.add_argument("ids", nargs="+", help="Exact atomic annotation IDs; quote IDs containing shell metacharacters such as 'ppt>2'")
+	id_create.add_argument("--annotation-schema", dest="annotation_schema_id", type=int, required=True)
+	id_create.add_argument("--region", default=None)
+	id_create.add_argument("--dialect", dest="dialect_id", type=int, default=None)
+	id_create.add_argument("--source", dest="source_kinds", action="append", choices=["txt", "sen", "lxs"], default=None, help="Restrict evidence sources; repeat as needed")
+	id_create.add_argument("--dataset-id", dest="dataset_ids", action="append", type=int, default=None, help="Restrict evidence to a dataset; repeat as needed")
+	id_create.add_argument("--instructions", default=None, help="Expert guidance applying to every requested ID")
+	id_create.add_argument("--note", action="append", default=None, metavar="ID=TEXT", help="Expert guidance for one requested ID; repeat as needed")
+	id_create.add_argument("--minimum-ngram-count", type=int, default=2)
+	id_create.add_argument("--example-limit", type=int, default=30)
+	id_create.add_argument("--model", default="gpt-5.6")
+	id_run = id_sub.add_parser("run", help="Run one queued ID-analysis job")
+	id_run.add_argument("job_id", type=int)
+	id_run.add_argument("--output", default=None, help="Write candidate records to a TSV file")
+	id_run.add_argument("--json", action="store_true", help="Print the complete audited JSON result")
+	id_show = id_sub.add_parser("show", help="Show one stored ID-analysis job/result")
+	id_show.add_argument("job_id", type=int)
+	id_show.add_argument("--output", default=None, help="Write the stored candidate TSV to a file")
+	id_show.add_argument("--json", action="store_true")
+	id_list = id_sub.add_parser("list", help="List recent ID-analysis jobs")
+	id_list.add_argument("--json", action="store_true")
+
 	args = parser.parse_args()
 	nrdb = NrdbClient(args.agent_url, args.morph_url)
 	if args.command == "create":
@@ -447,6 +493,52 @@ def main():
 		else:
 			if args.show_sentences < -1: parser.error("--show-sentences must be a non-negative number, or omitted to show all")
 			_print_results(nrdb.job_results(args.job_id), show_sentences=args.show_sentences)
+	elif args.command == "id-analysis":
+		if args.id_analysis_command == "create":
+			target_ids = list(dict.fromkeys(str(value).strip() for value in args.ids if str(value).strip()))
+			try:
+				notes = _id_analysis_notes(args.note, target_ids, args.instructions)
+			except ValueError as error:
+				parser.error(str(error))
+			_print_json(nrdb.create_id_analysis_job(
+				args.annotation_schema_id, target_ids, args.model, region=args.region,
+				dialect_id=args.dialect_id, research_notes=notes, source_kinds=args.source_kinds,
+				dataset_ids=args.dataset_ids, minimum_ngram_count=args.minimum_ngram_count,
+				example_limit=args.example_limit,
+			))
+		elif args.id_analysis_command == "run":
+			progress = (lambda _message: None) if args.json else print
+			bundle = run_id_analysis_job(nrdb, args.job_id, progress=progress)
+			if args.output:
+				write_result_tsv(args.output, bundle["tsv"])
+			if args.json:
+				_print_json(bundle["result"])
+			elif args.output:
+				candidate_count = sum(len(value.get("candidates", [])) for value in bundle["result"].get("analyses", []))
+				print("wrote {} candidate row(s) to {}".format(candidate_count, args.output))
+			else:
+				print(bundle["tsv"], end="")
+		elif args.id_analysis_command == "show":
+			job = nrdb.id_analysis_job(args.job_id)["job"]
+			tsv = str(job.get("result_tsv") or "")
+			if args.output:
+				if not tsv: parser.error("ID-analysis job has no stored TSV result")
+				write_result_tsv(args.output, tsv)
+			if args.json:
+				_print_json(job)
+			elif args.output:
+				print("wrote stored candidate TSV to {}".format(args.output))
+			elif tsv:
+				print(tsv, end="")
+			else:
+				_print_json(job)
+		elif args.id_analysis_command == "list":
+			jobs = nrdb.id_analysis_jobs()
+			if args.json:
+				_print_json(jobs)
+			else:
+				for job in jobs:
+					print("#{} {} schema={} ids={} model={}".format(job.get("id"), job.get("status"), job.get("annotation_schema_id"), ",".join(job.get("target_ids", [])), job.get("model_name")))
 	return 0
 
 

@@ -19,14 +19,14 @@ Core principles:
 - Most NRDB annotation labels are IDENTIFIERS, not glosses. Do not normally infer lexical meaning from kanji, spelling, or other human-readable material embedded in an ID label.
 - Exception: IDs in the reserved `n:` namespace explicitly represent Japanese lexical material. For example, `n:手紙` directly licenses Japanese 手紙 and does not require dictionary grounding to establish that lexical meaning. Treat the material following `n:` as Japanese lexical content, while still respecting surrounding Miyako grammar and constructional evidence.
 - Outside the reserved `n:` namespace, dictionary and corpus evidence outrank apparent semantics suggested by an ID's spelling. Only as a last resort, when an otherwise ungrounded lexical ID is transparently descriptive and no retrieved evidence contradicts it, you may use that transparent lexical content conservatively. Record such use as weak/ungrounded evidence rather than as authoritative dictionary grounding.
-- When construction_evidence is supplied, it contains explicit grammatical knowledge curated in NRDB. Each row was retrieved because its trigger_id occurs in the frozen annotation, but a trigger hit alone does NOT prove that the construction applies. Check that the row's full pattern fits the relevant annotation span. When it fits, interpret the WHOLE construction according to meaning_jp/realization_jp rather than composing its grammatical atoms independently. A matching curated construction outranks a conflicting default atom-by-atom interpretation or corpus guess.
+- When construction_evidence is supplied, it contains explicit grammatical knowledge curated in NRDB. A row with entry_type `morpheme` applies when its exact trigger_id occurs and supplies the default grammatical function/translation policy. For entry_type `construction`, a trigger hit alone does NOT prove that the construction applies: verify that its full pattern fits the relevant annotation span. A matching construction specializes and may override the general morpheme policy.
 
 Goal: produce a concise, natural Japanese translation grounded in the frozen annotation, explicit constructional evidence when enabled, bilingual dictionary data, and selectively retrieved corpus evidence.
 
 Rules:
 - First inspect any supplied construction_evidence. Pattern notation is lightweight linguistic notation over NRDB annotation: V/N/A/X are schematic content-word placeholders; literal IDs occur as written; `;`, `-`, and spaces retain their normal NRDB annotation meanings.
-- Apply a construction only when its full pattern fits. Do not apply a row merely because its trigger_id is present.
-- When a construction applies, its meaning_jp is strong grammatical evidence and realization_jp is a strong Japanese realization hint, not a blind string-substitution command. Ground captured/content lexical IDs from the dictionary and realize the construction naturally in context.
+- Apply a `morpheme` row on its exact trigger hit. Apply a `construction` row only when its full pattern fits; do not apply a construction merely because its trigger_id is present.
+- When a construction applies, interpret the WHOLE construction: it outranks a conflicting default atom-by-atom interpretation. Its meaning_jp is strong grammatical evidence and realization_jp is a strong Japanese realization hint, not a blind string-substitution command. Ground captured/content lexical IDs from the dictionary and realize the construction naturally in context.
 - Before translating, ground the non-`n:` lexical/content IDs that contribute referential or predicate meaning with ground_lexical_ids. Batch several IDs in one call. Dictionary meaning_jp/explanation_jp outrank any apparent meaning suggested by a non-`n:` ID label.
 - `n:` IDs are already explicit Japanese lexical material and need not be sent to ground_lexical_ids merely to recover their Japanese meaning.
 - ground_lexical_ids accepts exact atomic NRDB annotation IDs only. Never put commentary, questions, guessed decompositions, full phrases, or explanatory text inside the labels array.
@@ -201,7 +201,7 @@ class AnnotationAgentV7(AnnotationAgent):
 				"enabled": True,
 				"candidate_count": len(construction_candidates),
 				"candidates": construction_candidates,
-				"instruction": "Trigger hits are candidates only. Apply a construction only if its full pattern fits the frozen annotation span.",
+				"instruction": "Morpheme rows apply on an exact trigger hit. Construction rows are candidates only and apply only when the full pattern fits the frozen annotation span; a matching construction specializes the morpheme rule.",
 			}
 		base_input = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 		evidence_summary = []

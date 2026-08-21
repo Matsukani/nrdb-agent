@@ -46,6 +46,8 @@ def _int_value(obj, *names):
 
 def classify_stage(instructions):
 	text = str(instructions or "").lower()
+	if "grammatical-id analyst" in text:
+		return "id_analysis"
 	if "semantic consistency reviewer" in text:
 		return "semantic_review"
 	if "japanese translation phase" in text:

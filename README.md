@@ -91,3 +91,17 @@ nrdb-agent show JOB_ID
 ```
 
 The running agent does not learn online from gold mismatches. Blind results are retained as evaluation evidence for explicit later revisions to prompts, tools, or models.
+
+## Corpus-based grammatical ID analysis
+
+Create one auditable job for several exact annotation IDs, optionally supplying expert guidance for individual IDs:
+
+```bash
+nrdb-agent id-analysis create adv foc 'ppt>2' \
+	--annotation-schema 2 --region 宮古 \
+	--note 'foc=Focus particle; devise a natural Japanese policy, including licensed omission.' \
+	--model gpt-5.6-terra
+nrdb-agent id-analysis run JOB_ID --output id-analysis-JOB_ID.tsv
+```
+
+The agent analyzes exact CPS occurrences, same-phrase patterns, anchored corpus-native N-grams, and Japanese sentence translations. It proposes disabled `morpheme` and `construction` rows for human review; it never inserts them into NRDB. See [docs/id-analysis.md](docs/id-analysis.md).
