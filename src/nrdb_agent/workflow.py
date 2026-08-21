@@ -141,7 +141,7 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		"blind_translation": False,
 	}
 	agent_class = LicensedTaskAwareAnnotationAgent if use_licensed_forms else TaskAwareAnnotationAgent
-	agent = agent_class(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
+	agent = agent_class(nrdb, model_name, client=client, progress=progress, id_model_path=id_model, surface_model_path=surface_model)
 	morph_baseline = None
 
 	if use_existing:

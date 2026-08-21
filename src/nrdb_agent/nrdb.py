@@ -303,6 +303,17 @@ class NrdbClient:
 			raise RuntimeError(payload["error"])
 		return payload
 
+	def morph_analyze_fixed_segmentation(self, text, segmented, dialect_id, annotation_schema_id):
+		payload = self.http.post(self.morph_url + "/analyze", {
+			"text": text, "segmented_text": segmented,
+			"target_dialect_id": int(dialect_id), "annotation_schema_id": int(annotation_schema_id),
+		})
+		if payload.get("http_status", 200) >= 500:
+			raise RuntimeError(payload.get("error") or "nrdb-morph fixed-segmentation analysis failed")
+		if "error" in payload:
+			raise RuntimeError(payload["error"])
+		return payload
+
 	def validate_analysis(self, text, segmented, annotation):
 		payload = self.http.post(self.morph_url + "/validate-analysis", {"text": text, "segmented": segmented, "annotation": annotation})
 		status = int(payload.get("http_status", 200))

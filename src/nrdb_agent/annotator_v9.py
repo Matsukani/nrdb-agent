@@ -18,6 +18,7 @@ from .annotator import (
 from .annotator_v7 import GROUND_LEXICAL_IDS_TOOL
 from .annotator_v8 import AnnotationAgentV8, REVIEW_FORMAT
 from .reverse_id_critic import IdSequenceCritic
+from .surface_critic import SurfaceModelCritic
 
 
 V9_EFFICIENCY_RULES = """
@@ -31,6 +32,10 @@ annotation-v9 evidence-efficiency rules:
 - High-confidence model segments with no close alternative and no ID-sequence surprise should normally be left alone without evidence calls.
 - lookup_id remains available for a genuinely unclear lexical identity, but do not look up obvious IDs merely to confirm what the model already established.
 - validate_analysis is never optional for a proposed revision and does not consume the linguistic evidence budget.
+- When nrdb-morph is uncertain, contains '?', or appears to have joined/split an uncertain span incorrectly, test_segmentations may test one small batch of evidence-motivated alternative segmentations against the SAME morphology model with those boundaries fixed.
+- A tested segmentation is evidence, not truth. Prefer alternatives supported by licensed forms, dictionaries, corpus examples, or a plausible redivision of an uncertain model span. Do not enumerate arbitrary character cuts.
+- Every tested segmentation must reproduce the observed source exactly after removing only morpheme hyphens. Preserve phrase spaces. Test at most four alternatives, normally in one call.
+- The optional surface critic reports compatibility of the model's returned fixed-segmentation analysis. Use it comparatively; it does not establish the correct analysis by itself.
 - Skipped low-information requests do not consume the evidence budget; use the returned triage message and move on.
 """
 
@@ -69,6 +74,26 @@ FORM_ID_SUPPORT_BATCH_TOOL = {
 }
 
 
+TEST_SEGMENTATIONS_TOOL = {
+	"type": "function",
+	"name": "test_segmentations",
+	"description": "Run nrdb-morph ID decoding on up to four complete, source-preserving alternative segmentations with their boundaries fixed. Use only for a concrete uncertain or unknown span; do not enumerate arbitrary cuts. The result may also contain optional surface-critic compatibility evidence.",
+	"parameters": {
+		"type": "object",
+		"properties": {
+			"segmentations": {
+				"type": "array", "minItems": 1, "maxItems": 4,
+				"items": {"type": "string", "minLength": 1, "maxLength": 512},
+			},
+			"reason": {"type": "string", "minLength": 1, "maxLength": 240},
+		},
+		"required": ["segmentations", "reason"],
+		"additionalProperties": False,
+	},
+	"strict": True,
+}
+
+
 def _tool(name):
 	for value in TOOLS:
 		if value.get("name") == name:
@@ -78,7 +103,7 @@ def _tool(name):
 
 # Single-pair form_id_support is intentionally absent in v9. Comparative form
 # evidence should be gathered in one batch call.
-V9_TOOLS = [_tool("lookup_id"), _tool("corpus_examples"), FORM_ID_SUPPORT_BATCH_TOOL, _tool("validate_analysis")]
+V9_TOOLS = [_tool("lookup_id"), _tool("corpus_examples"), FORM_ID_SUPPORT_BATCH_TOOL, TEST_SEGMENTATIONS_TOOL, _tool("validate_analysis")]
 V9_REVIEW_TOOLS = [GROUND_LEXICAL_IDS_TOOL, _tool("form_id_support"), _tool("corpus_examples")]
 
 V9_REVIEW_INSTRUCTIONS = """You are the final semantic consistency reviewer for optimized NRDB annotation-v9.
@@ -106,12 +131,16 @@ Return exactly one JSON object:
 
 class AnnotationAgentV9(AnnotationAgentV8):
 	"""Forward annotation/translation with uncertainty-gated, shared evidence use."""
-	def __init__(self, *args, id_model_path=None, **kwargs):
+	def __init__(self, *args, id_model_path=None, surface_model_path=None, **kwargs):
 		super().__init__(*args, **kwargs)
 		self.id_model_path = str(id_model_path) if id_model_path else None
 		self.id_critic = IdSequenceCritic(id_model_path) if id_model_path else None
+		self.surface_model_path = str(surface_model_path) if surface_model_path else None
+		self.surface_critic = SurfaceModelCritic(surface_model_path) if surface_model_path else None
 		self._forward_hotspots = None
 		self._shared_evidence = {"lookup": {}, "corpus": {}, "form": {}}
+		self._segmentation_test_used = False
+		self._allow_segmentation_tests = True
 
 	@staticmethod
 	def _numeric(value):
@@ -165,6 +194,8 @@ class AnnotationAgentV9(AnnotationAgentV8):
 				reasons = []
 				if confidence is not None and confidence < 0.80:
 					reasons.append("low_confidence")
+				if label == "?" or "?" in [part.strip() for part in label.split(";")]:
+					reasons.append("unknown_id")
 				if margin is not None and margin < 0.15:
 					reasons.append("small_alternative_margin")
 				label_atoms = set(part.strip() for part in label.split(";") if part.strip())
@@ -200,6 +231,14 @@ class AnnotationAgentV9(AnnotationAgentV8):
 			return True, None
 		if name in {"lookup_id", "validate_analysis"}:
 			return True, None
+		if name == "test_segmentations":
+			if not self._allow_segmentation_tests:
+				return False, "Alternative segmentation tests are disabled because gold/existing morphology is authoritative."
+			if self._segmentation_test_used:
+				return False, "Only one bounded fixed-segmentation test batch is allowed per utterance."
+			if context.get("uncertain_surfaces") or context.get("hotspot_ids"):
+				return True, None
+			return False, "The morphology baseline has no uncertainty hotspot requiring alternative segmentation tests."
 		if name == "form_id_support_batch":
 			for item in arguments.get("items", []) or []:
 				surface = str(item.get("surface") or "").strip()
@@ -225,6 +264,44 @@ class AnnotationAgentV9(AnnotationAgentV8):
 		self._shared_evidence["form"]["{}\t{}".format(surface, candidate)] = result
 
 	def _tool_result_v9(self, name, arguments, item, schema_id):
+		if name == "test_segmentations":
+			if not self._allow_segmentation_tests:
+				return {"reason": str(arguments.get("reason") or "").strip(), "candidates": [], "disabled": True, "error": "gold/existing morphology is authoritative"}
+			self._segmentation_test_used = True
+			source = str(item.get("text") or "").strip()
+			seen = set()
+			rows = []
+			for raw_segmented in (arguments.get("segmentations") or [])[:4]:
+				segmented = str(raw_segmented or "").strip()
+				row = {"requested_segmented": segmented}
+				if not segmented or segmented in seen:
+					row.update({"accepted_for_test": False, "error": "blank or duplicate segmentation"})
+					rows.append(row)
+					continue
+				seen.add(segmented)
+				phrases = segmented.split(" ")
+				valid_shape = all(phrase and all(segment for segment in phrase.split("-")) for phrase in phrases)
+				if not valid_shape or segmented.replace("-", "") != source:
+					row.update({"accepted_for_test": False, "error": "segmentation must reproduce the source exactly after removing only hyphens and must preserve phrase spaces"})
+					rows.append(row)
+					continue
+				try:
+					result = self.nrdb.morph_analyze_fixed_segmentation(source, segmented, int(item["dialect_id"]), int(schema_id))
+				except RuntimeError as error:
+					row.update({"accepted_for_test": True, "model_error": str(error)})
+					rows.append(row)
+					continue
+				row.update({"accepted_for_test": True, "nrdb_morph": _compact_morph(result)})
+				if self.surface_critic is not None and result.get("segmented") and result.get("annotation"):
+					review = self.surface_critic.review(result["segmented"], result["annotation"], [int(item["dialect_id"])], int(schema_id))
+					row["surface_review"] = {
+						"valid_alignment": review.get("valid_alignment"),
+						"strong_disagreements": review.get("strong_disagreements"),
+						"phonotactic_mean_log_probability": review.get("phonotactic_mean_log_probability"),
+						"segments": review.get("segments", []),
+					}
+				rows.append(row)
+			return {"reason": str(arguments.get("reason") or "").strip(), "candidates": rows, "surface_critic_enabled": self.surface_critic is not None}
 		if name == "form_id_support_batch":
 			region = str(item.get("dialect_region") or "").strip()
 			rows = []
@@ -273,11 +350,13 @@ class AnnotationAgentV9(AnnotationAgentV8):
 		return self._tool_result(name, arguments, item, schema_id)
 
 	def _compact_v9(self, name, result):
-		if name == "form_id_support_batch":
+		if name in {"form_id_support_batch", "test_segmentations"}:
 			return result
 		return _compact_tool_result(name, result)
 
 	def _trace_args_v9(self, name, arguments):
+		if name == "test_segmentations":
+			return "segmentations={} reason={!r}".format(arguments.get("segmentations", []), arguments.get("reason", ""))
 		if name == "form_id_support_batch":
 			return "items={}".format([
 				{"surface": value.get("surface"), "candidate_ids": value.get("candidate_ids", [])}
@@ -286,6 +365,9 @@ class AnnotationAgentV9(AnnotationAgentV8):
 		return _trace_arguments(name, arguments)
 
 	def _trace_result_v9(self, name, result):
+		if name == "test_segmentations":
+			accepted = sum(1 for row in result.get("candidates", []) if row.get("accepted_for_test"))
+			return "candidates={} tested={} surface_critic={}".format(len(result.get("candidates", [])), accepted, "on" if result.get("surface_critic_enabled") else "off")
 		if name == "form_id_support_batch":
 			checked = 0
 			skipped = 0
@@ -299,6 +381,8 @@ class AnnotationAgentV9(AnnotationAgentV8):
 		return _trace_result(name, result)
 
 	def _annotation_phase_v9(self, item, job, morph_result):
+		self._segmentation_test_used = False
+		self._allow_segmentation_tests = str(job.get("morphology_source") or "predict") not in {"existing", "gold"}
 		self._forward_hotspots = self._prepare_hotspots(morph_result, int(job["annotation_schema_id"]))
 		compact_hotspots = {
 			"policy": self._forward_hotspots["policy"],

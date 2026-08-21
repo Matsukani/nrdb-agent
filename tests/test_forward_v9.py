@@ -26,6 +26,7 @@ class FakeNrdb:
 	def __init__(self):
 		self.form_calls = []
 		self.lookup_calls = []
+		self.fixed_calls = []
 
 	def form_id_support(self, surface, candidate, region, schema_id, exclude_sentence_id=0):
 		self.form_calls.append((surface, candidate, region, schema_id, exclude_sentence_id))
@@ -40,11 +41,20 @@ class FakeNrdb:
 		self.lookup_calls.append((label, schema_id))
 		return {"label": label, "lexical_entries": [{"form1": "x", "meaning_jp": "X"}], "local": None, "global": None}
 
+	def morph_analyze_fixed_segmentation(self, text, segmented, dialect_id, schema_id):
+		self.fixed_calls.append((text, segmented, dialect_id, schema_id))
+		parts = segmented.split("-")
+		return {"segmented": segmented, "annotation": "-".join("ID{}".format(index) for index, _ in enumerate(parts, start=1)), "phrases": []}
+
 
 def _agent():
 	agent = AnnotationAgentV9.__new__(AnnotationAgentV9)
 	agent.id_critic = IdSequenceCritic(model=FakeIdModel())
 	agent.id_model_path = "id.json"
+	agent.surface_critic = None
+	agent.surface_model_path = None
+	agent._segmentation_test_used = False
+	agent._allow_segmentation_tests = True
 	agent._shared_evidence = {"lookup": {}, "corpus": {}, "form": {}}
 	return agent
 
@@ -63,6 +73,13 @@ def test_forward_v9_builds_id_and_surface_hotspots():
 	assert "食kv" in context["hotspot_ids"]
 	assert "fo" in context["uncertain_surfaces"]
 	assert "soba" not in context["uncertain_surfaces"]
+
+
+def test_forward_v9_marks_unknown_id_as_segmentation_hotspot():
+	agent = _agent()
+	context = agent._prepare_hotspots({"annotation": "?", "phrases": [{"segments": [{"surface": "faira", "label": "?"}]}]}, 2)
+	assert context["uncertain_surfaces"] == ["faira"]
+	assert "unknown_id" in context["uncertainty_reasons"]["faira"]
 
 
 def test_forward_v9_missing_confidence_and_candidate_list_are_not_automatically_uncertain():
@@ -122,6 +139,40 @@ def test_forward_v9_batches_multiple_form_pairs_into_one_tool_result():
 	assert len(agent.nrdb.form_calls) == 4
 	assert all(call[-1] == 77 for call in agent.nrdb.form_calls)
 	assert set(agent._shared_evidence["form"]) == {"aga\t東an", "aga\t上av", "ga\titf:ga", "ga\tint:ga"}
+
+
+def test_forward_v9_tests_bounded_source_preserving_fixed_segmentations():
+	agent = _agent()
+	agent.nrdb = FakeNrdb()
+	result = agent._tool_result_v9(
+		"test_segmentations",
+		{"segmentations": ["fai-ra", "fa-ira", "fai--ra", "fai-r"], "reason": "unknown final span"},
+		{"text": "faira", "dialect_id": 19}, 2,
+	)
+	assert agent.nrdb.fixed_calls == [("faira", "fai-ra", 19, 2), ("faira", "fa-ira", 19, 2)]
+	assert [row["accepted_for_test"] for row in result["candidates"]] == [True, True, False, False]
+	assert result["candidates"][0]["nrdb_morph"]["annotation"] == "ID1-ID2"
+	assert result["surface_critic_enabled"] is False
+
+
+def test_forward_v9_allows_only_one_segmentation_test_batch():
+	agent = _agent()
+	agent._forward_hotspots = {"hotspot_ids": [], "uncertain_surfaces": ["faira"]}
+	allowed, _ = agent._query_is_hotspot("test_segmentations", {"segmentations": ["fai-ra"], "reason": "unknown"})
+	assert allowed is True
+	agent._segmentation_test_used = True
+	allowed, reason = agent._query_is_hotspot("test_segmentations", {"segmentations": ["fa-ira"], "reason": "compare"})
+	assert allowed is False
+	assert "Only one" in reason
+
+
+def test_forward_v9_disables_segmentation_tests_for_gold_or_existing_morphology():
+	agent = _agent()
+	agent._forward_hotspots = {"hotspot_ids": [], "uncertain_surfaces": ["faira"]}
+	agent._allow_segmentation_tests = False
+	allowed, reason = agent._query_is_hotspot("test_segmentations", {"segmentations": ["fai-ra"], "reason": "unknown"})
+	assert allowed is False
+	assert "authoritative" in reason
 
 
 def test_forward_v9_reuses_cached_lexical_grounding():

@@ -109,6 +109,7 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	dialects = _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids)
 	nrdb.exclude_job_id = 0
 	id_model = id_model or os.environ.get("NRDB_ID_MODEL")
+	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
 	usage_tracker = UsageTracker()
 	client = tracked_client(openai_client, usage_tracker)
 
@@ -150,6 +151,8 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 		progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
 		if id_model and not use_fixed_morphology:
 			progress("  forward ID critic: {}".format(id_model))
+		if surface_model and not use_fixed_morphology:
+			progress("  forward segmentation surface critic: {}".format(surface_model))
 		item = {"sentence_id": int(sentence_id or 0), "dialect_id": dialect_id, "dialect_region": region, "text": text, "translation_jp": existing_translation if semantic_feedback in {"existing", "auto"} else None}
 		job = {
 			"annotation_schema_id": annotation_schema_id, "model_name": model_name,
@@ -159,7 +162,10 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			"morphology_source": "existing" if use_fixed_morphology else "predict", "produce_translation": True, "blind_translation": False,
 		}
 		agent_class = LicensedTaskAwareAnnotationAgent if use_licensed_forms else TaskAwareAnnotationAgent
-		agent = agent_class(nrdb, model_name, client=client, progress=progress, id_model_path=None if use_fixed_morphology else id_model)
+		agent_kwargs = {"id_model_path": None if use_fixed_morphology else id_model}
+		if surface_model and not use_fixed_morphology:
+			agent_kwargs["surface_model_path"] = surface_model
+		agent = agent_class(nrdb, model_name, client=client, progress=progress, **agent_kwargs)
 		if use_fixed_morphology:
 			result = _translate_frozen_with_json_retry(agent, item, job, fixed_segmented, fixed_annotation, progress)
 		else:

@@ -73,6 +73,7 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 		agent_kwargs["id_model_path"] = id_model
 	elif agent_class is AnnotationAgentV9:
 		agent_kwargs["id_model_path"] = id_model
+		agent_kwargs["surface_model_path"] = surface_model
 	agent = agent_class(nrdb, job["model_name"], **agent_kwargs)
 	nrdb.set_job_status(job_id, "running")
 	completed = 0
@@ -101,6 +102,8 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 					progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
 					if prompt_version == "annotation-v9" and id_model:
 						progress("  forward IDs: nrdb-morph critic={}".format(id_model))
+					if prompt_version == "annotation-v9" and surface_model:
+						progress("  forward segmentation surface critic={}".format(surface_model))
 				for attempt in range(1, AGENT_JSON_ATTEMPTS + 1):
 					try:
 						result = agent.annotate(item, job, morph)
