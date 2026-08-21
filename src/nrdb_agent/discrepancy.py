@@ -1,6 +1,7 @@
 import json
 import random
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .annotator import AnnotationAgent, _response_incomplete_reason
@@ -12,6 +13,11 @@ from .usage import UsageTracker, tracked_client
 DISCOVERY_FORMAT = "nrdb-agent.translation-discovery.v1"
 BASELINE_FORMAT = "nrdb-agent.translation-discrepancy.v1"
 CHECK_FORMAT = "nrdb-agent.translation-repair-check.v1"
+DISCOVERY_STAGES = {
+	DISCOVERY_FORMAT: "discovery",
+	BASELINE_FORMAT: "baseline",
+	CHECK_FORMAT: "repair_check",
+}
 
 
 DISCREPANCY_INSTRUCTIONS = """You are the NRDB Japanese translation discrepancy critic.
@@ -88,6 +94,46 @@ def _write(path, payload):
 	path.parent.mkdir(parents=True, exist_ok=True)
 	path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
 	return str(path)
+
+
+def list_discoveries(directory=".", recursive=False, latest=None):
+	directory = Path(directory)
+	if not directory.is_dir():
+		raise ValueError("discrepancy directory does not exist: {}".format(directory))
+	paths = directory.rglob("*.json") if recursive else directory.glob("*.json")
+	artifacts = []
+	for path in paths:
+		try:
+			payload = json.loads(path.read_text(encoding="utf-8"))
+		except (OSError, json.JSONDecodeError):
+			continue
+		stage = DISCOVERY_STAGES.get(payload.get("format")) if isinstance(payload, dict) else None
+		if stage is None:
+			continue
+		selection = payload.get("selection") or {}
+		summary = payload.get("summary") or {}
+		rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
+		failed = int(summary.get("failed") or 0)
+		status = "created" if stage == "discovery" else ("completed" if failed == 0 else ("failed" if failed == len(rows) else "partial"))
+		modified = path.stat().st_mtime
+		artifacts.append({
+			"path": str(path), "filename": path.name, "stage": stage, "status": status,
+			"modified_at": datetime.fromtimestamp(modified, tz=timezone.utc).isoformat(), "modified_timestamp": modified,
+			"target_ids": list(selection.get("target_ids") or []),
+			"annotation_schema_id": selection.get("annotation_schema_id"), "region": selection.get("region"),
+			"dataset_ids": list(selection.get("dataset_ids") or []), "rows": len(rows),
+			"sampled_rows_by_id": dict(selection.get("sampled_rows_by_id") or {}),
+			"translation_model": (payload.get("models") or {}).get("translation"),
+			"discrepancy_model": (payload.get("models") or {}).get("discrepancy"),
+			"counts": dict(summary.get("counts") or {}), "failed_rows": failed,
+			"estimated_cost_usd": summary.get("estimated_cost_usd"), "pricing_complete": summary.get("pricing_complete"),
+		})
+	artifacts.sort(key=lambda value: (-value["modified_timestamp"], value["path"]))
+	for artifact in artifacts:
+		artifact.pop("modified_timestamp", None)
+	if latest is not None:
+		artifacts = artifacts[:max(0, int(latest))]
+	return artifacts
 
 
 def _morpheme_count(annotation):

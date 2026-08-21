@@ -126,3 +126,29 @@ def test_check_rejects_translation_model_change(tmp_path):
 	}), encoding="utf-8")
 	with pytest.raises(ValueError, match="must use the baseline translation model"):
 		discrepancy.check_discovery(FakeNrdb(), path, tmp_path / "out.json", translation_model="gpt-5.6-terra")
+
+
+def test_list_discoveries_summarizes_recognized_local_artifacts(tmp_path):
+	cohort = tmp_path / "discovery.json"
+	baseline = tmp_path / "baseline.json"
+	(tmp_path / "unrelated.json").write_text('{"hello":"world"}', encoding="utf-8")
+	discrepancy.create_discovery(FakeNrdb(), ["adv"], None, 2, "宮古", limit=1, output=cohort)
+	baseline.write_text(json.dumps({
+		"format": discrepancy.BASELINE_FORMAT,
+		"selection": {"target_ids": ["adv"], "annotation_schema_id": 2, "region": "宮古", "dataset_ids": [], "sampled_rows_by_id": {"adv": 1}},
+		"models": {"translation": "gpt-5.6-luna", "discrepancy": "gpt-5.6-terra"},
+		"rows": [{"sentence_id": 1}],
+		"summary": {"failed": 0, "counts": {"equivalent": 1}, "estimated_cost_usd": 0.01, "pricing_complete": True},
+	}), encoding="utf-8")
+	rows = discrepancy.list_discoveries(tmp_path)
+	assert {row["stage"] for row in rows} == {"discovery", "baseline"}
+	baseline_row = next(row for row in rows if row["stage"] == "baseline")
+	assert baseline_row["status"] == "completed"
+	assert baseline_row["translation_model"] == "gpt-5.6-luna"
+	assert baseline_row["counts"] == {"equivalent": 1}
+	assert len(discrepancy.list_discoveries(tmp_path, latest=1)) == 1
+
+
+def test_list_discoveries_rejects_missing_directory(tmp_path):
+	with pytest.raises(ValueError, match="does not exist"):
+		discrepancy.list_discoveries(tmp_path / "missing")

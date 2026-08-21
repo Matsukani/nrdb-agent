@@ -56,3 +56,21 @@ nrdb-agent discrepancy-check baseline.json \
 The check reruns exactly the frozen baseline rows with constructions enabled. It defaults to the baseline translation model and rejects a different `--translation-model`, since changing the generator would confound the construction comparison. The discrepancy model may be changed because it judges the baseline and construction-assisted translations together in the same repair comparison.
 
 Each command writes after every completed row, preserving paid work if a later row fails. Failed rows remain explicit in the artifact and are excluded from outcome counts.
+
+## List local experiments
+
+Discrepancy experiments are local audited JSON artifacts rather than database jobs. List the artifacts in the current directory with:
+
+```bash
+nrdb-agent discrepancy-list
+```
+
+Useful variants are:
+
+```bash
+nrdb-agent discrepancy-list --latest 5
+nrdb-agent discrepancy-list --directory experiments --recursive
+nrdb-agent discrepancy-list --json
+```
+
+The listing reports stage, status, target IDs, schema/region scope, row count, models, cost, modification time, and path.

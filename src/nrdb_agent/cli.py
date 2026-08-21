@@ -4,7 +4,7 @@ import json
 from .asr_review import review_asr_predictions
 from .batch import export_job_results_tsv, process_dataset
 from .cli_output import TranslationProgress, WorkflowProgress, add_output_mode_args, output_mode_from_args, silent_translation_line
-from .discrepancy import check_discovery, create_discovery, run_discovery
+from .discrepancy import check_discovery, create_discovery, list_discoveries, run_discovery
 from .id_analysis import run_id_analysis_job, write_result_tsv
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
@@ -37,6 +37,24 @@ def _print_discrepancy_summary(label, value, output):
 	if candidates:
 		print("morphemes to analyse: {}".format(", ".join("{} ({})".format(row["morph_id"], row["attributed_errors"]) for row in candidates)))
 	print("wrote {}".format(output))
+
+
+def _print_discrepancy_list(rows):
+	if not rows:
+		print("no discrepancy artifacts found")
+		return
+	for row in rows:
+		models = ""
+		if row.get("translation_model") or row.get("discrepancy_model"):
+			models = " | models={}/{}".format(row.get("translation_model") or "-", row.get("discrepancy_model") or "-")
+		cost = ""
+		if row.get("pricing_complete"):
+			cost = " | ${:.4f}".format(float(row.get("estimated_cost_usd") or 0.0))
+		print("{} | {} | {} | rows={} | schema={} region={} | ids={}{}{} | {}".format(
+			row.get("modified_at", "")[:19], row.get("stage"), row.get("status"), row.get("rows", 0),
+			row.get("annotation_schema_id") or "-", row.get("region") or "-", ",".join(row.get("target_ids") or []),
+			models, cost, row.get("path"),
+		))
 
 
 def _print_asr_review(value):
@@ -382,6 +400,12 @@ def main():
 	discrepancy_check.add_argument("--discrepancy-model", default="gpt-5.6-terra", help="Model that judges repair versus regression")
 	discrepancy_check.add_argument("--output", required=True, help="Write construction-assisted translations and repair judgments JSON")
 
+	discrepancy_list = sub.add_parser("discrepancy-list", help="List local discrepancy discovery, baseline, and repair artifacts")
+	discrepancy_list.add_argument("--directory", default=".", help="Directory containing discrepancy JSON artifacts")
+	discrepancy_list.add_argument("--recursive", action="store_true", help="Search subdirectories recursively")
+	discrepancy_list.add_argument("--latest", nargs="?", const=1, type=_positive_count, default=None, metavar="N", help="Show only the latest artifact; optionally latest N")
+	discrepancy_list.add_argument("--json", action="store_true")
+
 	asr_review = sub.add_parser("asr-review", help="Blindly rerank ASR n-best hypotheses with NRDB linguistic evidence")
 	asr_review.add_argument("predictions")
 	asr_review.add_argument("--out-dir", required=True)
@@ -536,6 +560,9 @@ def main():
 			discrepancy_model=args.discrepancy_model,
 		)
 		_print_discrepancy_summary("repair check complete", value, args.output)
+	elif args.command == "discrepancy-list":
+		value = list_discoveries(args.directory, recursive=args.recursive, latest=args.latest)
+		_print_json(value) if args.json else _print_discrepancy_list(value)
 	elif args.command == "asr-review":
 		value = review_asr_predictions(nrdb, args.predictions, args.out_dir, args.annotation_schema_id, args.region, args.dialect_id, model_name=args.model, id_model_path=args.id_model, surface_model_path=args.surface_model, phrase_boundary_model_path=args.phrase_boundary_model, limit=args.limit, max_candidates=args.max_candidates, use_llm=not args.no_llm)
 		_print_json(value) if args.json else _print_asr_review(value)
