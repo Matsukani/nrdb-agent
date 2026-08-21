@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import re
 from pathlib import Path
 
 from .annotator import AnnotationAgent, _response_incomplete_reason
@@ -15,6 +16,7 @@ Your task is to propose a compact, auditable grammatical-knowledge record for tr
 
 Method and evidence rules:
 - Give the ID's central function a conventional, broadly recognizable linguistic name in English and Japanese. Do not expand the opaque ID label as if it were a gloss.
+- Every candidate `name` must be a concise, descriptive English `lower_snake_case` identifier. Never use Japanese, an opaque annotation ID alone, spaces, hyphens, or punctuation in `name`. Candidate names must be distinct.
 - Describe the central function succinctly in Japanese. State its host/attachment and semantic or discourse scope when the evidence supports them.
 - Give an operational Japanese translation policy that another translation agent can follow. A policy may explicitly license omission, reordering, lexical compensation, or a context-dependent Japanese expression.
 - Expert research notes are deliberate guidance. Follow them unless the corpus evidence clearly conflicts; record any conflict in warnings rather than silently ignoring it.
@@ -104,6 +106,25 @@ def _bounded_confidence(value):
 		return 0.0
 
 
+def _english_key(value):
+	key = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+	if key and not key[0].isalpha():
+		key = "grammar_" + key
+	return key
+
+
+def _scoped_english_name(value, target_id):
+	base = _english_key(value)
+	target = _english_key(target_id)
+	if not base or not target:
+		raise ValueError("ID analysis returned a name that cannot form an English identifier")
+	suffix = "_" + target
+	base = base[:128 - len(suffix)].rstrip("_")
+	if not base:
+		raise ValueError("ID analysis returned an unusable English name")
+	return base + suffix
+
+
 def _example_text(example):
 	return str(
 		example.get("phrase_form2") or example.get("phrase_form1") or
@@ -173,11 +194,17 @@ def normalize_analysis(payload, evidence):
 
 	warnings = [str(value).strip() for value in payload.get("warnings", []) if str(value).strip()]
 	normalized = []
+	seen_names = set()
 	for raw in candidates:
 		entry_type = str(raw.get("entry_type") or "")
+		name_source = payload.get("linguistic_name_en") if entry_type == "morpheme" else raw.get("name")
+		candidate_name = _scoped_english_name(name_source, target_id)
+		if candidate_name in seen_names:
+			raise ValueError("ID analysis returned duplicate candidate names")
+		seen_names.add(candidate_name)
 		candidate = {
 			"entry_type": entry_type,
-			"name": str(raw.get("name") or "").strip()[:128],
+			"name": candidate_name,
 			"trigger_id": target_id,
 			"pattern": target_id if entry_type == "morpheme" else str(raw.get("pattern") or "").strip(),
 			"meaning_jp": str(raw.get("meaning_jp") or "").strip(),

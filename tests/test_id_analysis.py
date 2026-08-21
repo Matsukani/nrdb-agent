@@ -54,9 +54,30 @@ def test_normalize_analysis_materializes_only_attested_examples():
 	candidate = result["candidates"][0]
 	assert candidate["trigger_id"] == "advs"
 	assert candidate["pattern"] == "advs"
+	assert candidate["name"] == "adversative_advs"
 	assert [value["example_key"] for value in candidate["examples"]] == ["sen:7:21:31:41"]
 	assert "sii-ga" in candidate["note"]
 	assert "invented" in result["warnings"][0]
+
+
+def test_morpheme_name_is_deterministic_english_key():
+	payload = _analysis_payload("ppt>2")
+	payload["linguistic_name_en"] = "Potential marker"
+	payload["candidates"][0]["name"] = "可能標識"
+	result = normalize_analysis(payload, _evidence("ppt>2"))
+	assert result["candidates"][0]["name"] == "potential_marker_ppt_2"
+
+
+def test_construction_name_is_normalized_and_scoped_to_target():
+	payload = _analysis_payload()
+	payload["candidates"].append({
+		"entry_type": "construction", "name": "Counter-expectation Contrast", "trigger_id": "advs",
+		"pattern": "V-advs foc", "meaning_jp": "反期待を表す。", "realization_jp": "「のに」などで訳す。",
+		"note": "通常の合成より限定された用法。", "priority": 100, "confidence": 0.8,
+		"example_references": [{"example_key": "sen:7:21:31:41", "mapping_note_jp": "反期待。"}],
+	})
+	result = normalize_analysis(payload, _evidence())
+	assert result["candidates"][1]["name"] == "counter_expectation_contrast_advs"
 
 
 def test_normalize_analysis_rejects_unknown_entry_type():

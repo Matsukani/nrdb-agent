@@ -57,6 +57,8 @@ meaning_jp realization_jp note priority enabled
 
 Audit columns follow with linguistic names, confidence, evidence counts, selected example keys, exact example JSON, expert notes, and warnings.
 
+`name` is always a stable English `lower_snake_case` identifier scoped by the exact target ID. Morpheme names are derived deterministically from `linguistic_name_en`, for example `focus_particle_foc` and `potential_ppt_2`; `linguistic_name_jp` remains the Japanese display label.
+
 All candidates have `enabled=0`. The agent cannot insert them into `annotation_constructions`. Example selection is also constrained: the model returns CPS evidence keys, and `nrdb-agent` reconstructs the actual source, annotation, and translation from NRDB. Unknown or invented keys are discarded and recorded as warnings.
 
 ## Interpretation policy
