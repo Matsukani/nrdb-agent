@@ -522,7 +522,8 @@ def main():
 			limit=args.limit, seed=args.seed, min_morphemes=args.min_morphemes,
 			require_all=args.require_all, output=args.output,
 		)
-		print("created {} frozen row(s) from {} eligible rows: {}".format(len(value["rows"]), value["selection"]["eligible_pool_size"], args.output))
+		print("created {} frozen assignment(s), up to {} per ID: {}".format(len(value["rows"]), value["selection"]["limit_per_id"], args.output))
+		print("per ID: {}".format(json.dumps(value["selection"]["sampled_rows_by_id"], ensure_ascii=False)))
 	elif args.command == "discrepancy-run":
 		value = run_discovery(
 			nrdb, args.discovery, args.output, translation_model=args.translation_model,

@@ -106,7 +106,7 @@ def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region
 		raise ValueError("at least one target morpheme ID is required")
 	dataset_ids = sorted({int(value) for value in (dataset_ids or [])})
 	rows = nrdb.morph_eval_rows(dataset_ids, annotation_schema_id=annotation_schema_id, region=region)
-	eligible = []
+	pools = {target_id: [] for target_id in target_ids}
 	for row in rows:
 		if int(row.get("annotation_schema_id") or 0) != int(annotation_schema_id):
 			continue
@@ -119,27 +119,42 @@ def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region
 		matched = _row_targets(row, target_ids)
 		if (require_all and len(matched) != len(target_ids)) or (not require_all and not matched):
 			continue
-		eligible.append({
+		base = {
 			"sentence_id": int(row["sentence_id"]), "dataset_id": int(row["dataset_id"]),
 			"example_id": str(row.get("example_id") or ""), "dialect_id": int(row["dialect_id"]),
 			"dialect_region": str(row.get("dialect_region") or ""), "source": str(row.get("text") or ""),
 			"gold_segmented": str(row.get("gold_segmented") or ""), "gold_annotation": str(row.get("gold_annotation") or ""),
-			"gold_translation": str(row.get("translation_jp") or ""), "matched_target_ids": matched,
-		})
-	pool_size = len(eligible)
-	random.Random(int(seed)).shuffle(eligible)
-	eligible = eligible[:int(limit)]
-	if not eligible:
+			"gold_translation": str(row.get("translation_jp") or ""),
+		}
+		for target_id in matched:
+			pools[target_id].append(base)
+	pool_sizes = {target_id: len(pool) for target_id, pool in pools.items()}
+	selected = []
+	sampled_by_id = {}
+	for target_id, pool in pools.items():
+		pool = list(pool)
+		random.Random("{}:{}".format(int(seed), target_id)).shuffle(pool)
+		pool = pool[:int(limit)]
+		sampled_by_id[target_id] = len(pool)
+		for base in pool:
+			assignment = dict(base)
+			assignment["target_id"] = target_id
+			assignment["matched_target_ids"] = [target_id]
+			assignment["assignment_id"] = "{}:{}:{}".format(target_id, base["dataset_id"], base["sentence_id"])
+			selected.append(assignment)
+	if not selected:
 		raise ValueError("no translated gold rows match the requested morphemes and scope")
 	payload = {
 		"format": DISCOVERY_FORMAT,
 		"selection": {
 			"target_ids": target_ids, "dataset_ids": dataset_ids,
 			"annotation_schema_id": int(annotation_schema_id), "region": str(region),
-			"limit": int(limit), "seed": int(seed), "min_morphemes": int(min_morphemes),
-			"match": "all" if require_all else "any", "eligible_pool_size": pool_size,
+			"limit_per_id": int(limit), "limit": int(limit), "seed": int(seed), "min_morphemes": int(min_morphemes),
+			"match": "all" if require_all else "independent_per_id",
+			"eligible_pool_size_by_id": pool_sizes, "sampled_rows_by_id": sampled_by_id,
+			"eligible_assignments": sum(pool_sizes.values()), "sampled_assignments": len(selected),
 		},
-		"rows": eligible,
+		"rows": selected,
 	}
 	if output:
 		_write(output, payload)

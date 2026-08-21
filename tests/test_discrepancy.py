@@ -44,6 +44,15 @@ class FakeJudge:
 		return {"outcome": "repaired", "baseline_relation": "substantive_difference", "construction_relation": "equivalent"}
 
 
+class OverlapNrdb:
+	def morph_eval_rows(self, dataset_ids, annotation_schema_id=None, region=None):
+		return [{
+			"sentence_id": 9, "dataset_id": 30, "example_id": "overlap", "dialect_id": 19,
+			"dialect_region": "宮古", "annotation_schema_id": 2, "text": "raw",
+			"gold_segmented": "a-b-c", "gold_annotation": "A-adv-foc", "translation_jp": "金訳",
+		}]
+
+
 def test_create_discovery_filters_gold_translations_ids_and_morpheme_count(tmp_path):
 	output = tmp_path / "cohort.json"
 	result = discrepancy.create_discovery(
@@ -52,6 +61,7 @@ def test_create_discovery_filters_gold_translations_ids_and_morpheme_count(tmp_p
 	)
 	assert [row["sentence_id"] for row in result["rows"]] == [1]
 	assert result["rows"][0]["matched_target_ids"] == ["adv"]
+	assert result["selection"]["limit_per_id"] == 10
 	assert json.loads(output.read_text(encoding="utf-8"))["format"] == discrepancy.DISCOVERY_FORMAT
 
 
@@ -62,6 +72,18 @@ def test_create_discovery_pools_region_and_schema_when_datasets_are_omitted(tmp_
 	)
 	assert result["selection"]["dataset_ids"] == []
 	assert [row["sentence_id"] for row in result["rows"]] == [1]
+
+
+def test_create_discovery_samples_each_target_independently_and_keeps_overlap_assignments(tmp_path):
+	result = discrepancy.create_discovery(
+		OverlapNrdb(), ["adv", "foc"], None, 2, "宮古", limit=1,
+		output=tmp_path / "cohort.json",
+	)
+	assert len(result["rows"]) == 2
+	assert [row["target_id"] for row in result["rows"]] == ["adv", "foc"]
+	assert [row["matched_target_ids"] for row in result["rows"]] == [["adv"], ["foc"]]
+	assert result["selection"]["eligible_pool_size_by_id"] == {"adv": 1, "foc": 1}
+	assert result["selection"]["sampled_rows_by_id"] == {"adv": 1, "foc": 1}
 
 
 def test_run_and_check_keep_translation_and_judge_models_separate(tmp_path, monkeypatch):
