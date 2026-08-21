@@ -22,9 +22,16 @@ def _print_json(value):
 
 def _print_translation(value):
 	print("source:      {}".format(value.get("source", "")))
-	if value.get("segmented"):
-		print("segmented:   {}".format(value.get("segmented", "")))
-	print("annotation:  {}".format(value.get("annotation", "")))
+	baseline = value.get("morph_baseline") if isinstance(value.get("morph_baseline"), dict) else None
+	if baseline and baseline.get("source") == "nrdb-morph":
+		print("morph seg.:  {}".format(baseline.get("segmented", "")))
+		print("morph ann.:  {}".format(baseline.get("annotation", "")))
+		print("agent seg.:  {}".format(value.get("segmented", "")))
+		print("agent ann.:  {}".format(value.get("annotation", "")))
+	else:
+		if value.get("segmented"):
+			print("segmented:   {}".format(value.get("segmented", "")))
+		print("annotation:  {}".format(value.get("annotation", "")))
 	print("translation: {}".format(value.get("translation", "")))
 	print("confidence:  {} | decision: {}".format(value.get("confidence", ""), value.get("decision", "")))
 

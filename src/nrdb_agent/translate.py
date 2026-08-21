@@ -133,6 +133,12 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 		else:
 			progress("  morph: analyze")
 			morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
+		morph_baseline = {
+			"source": "existing" if use_fixed_morphology else "nrdb-morph",
+			"segmented": str(morph.get("segmented") or "").strip(),
+			"annotation": str(morph.get("annotation") or "").strip(),
+			"inference": dict(morph.get("inference") or {}) if isinstance(morph.get("inference"), dict) else {},
+		}
 		licensed = None
 		if use_licensed_forms:
 			surfaces = [segment for phrase in str(morph.get("segmented") or "").split() for segment in phrase.split("-") if segment]
@@ -172,6 +178,7 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			"segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""),
 			"translation": result.get("trsl_ai", ""), "decision": result.get("decision"),
 			"confidence": result.get("confidence"), "api_usage": usage, "evidence": result.get("evidence", {}),
+			"morph_baseline": morph_baseline,
 		}
 
 	if semantic_feedback != "none" or require_semantic_feedback or use_constructions or use_licensed_forms:

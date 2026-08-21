@@ -131,6 +131,9 @@ def test_direct_miyako_to_japanese_uses_region_dialect_morph_service_and_provena
 	assert result["translation"] == "見るよ。"
 	assert result["morph_dialect_id"] == 22
 	assert result["morph_inference"]["model_id"] == "miyako-65k-hybrid-shared-v002"
+	assert result["morph_baseline"]["source"] == "nrdb-morph"
+	assert result["morph_baseline"]["segmented"] == "mi-ja"
+	assert result["morph_baseline"]["annotation"] == "見mv-top:1"
 	assert result["use_constructions"] is False
 	assert result["use_licensed_forms"] is False
 	assert any("miyako-65k-hybrid-shared-v002" in message and "top-k=5" in message for message in messages)
@@ -156,6 +159,7 @@ def test_direct_miyako_to_japanese_can_translate_frozen_gold_morphology(monkeypa
 	)
 	assert nrdb.morph_calls == []
 	assert result["morphology_source"] == "gold"
+	assert result["morph_baseline"]["source"] == "existing"
 	assert result["annotation"] == "gold-ann"
 	assert result["translation"] == "金形態からの訳"
 
