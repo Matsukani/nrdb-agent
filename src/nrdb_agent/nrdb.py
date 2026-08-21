@@ -229,9 +229,16 @@ class NrdbClient:
 
 	def examples(self, label, annotation_schema_id, exclude_sentence_id, limit=12, exclude_job_id=None):
 		label = str(label or "").strip()
-		segment_count = len(label.split("-")) if label else 0
-		if len(label) > 256 or segment_count > 8:
-			reason = "corpus_examples query rejected locally: use a shorter construction with at most 8 hyphen-separated segments and at most 256 characters"
+		segments = label.split("-") if label else []
+		segment_count = len(segments)
+		invalid_segment = False
+		for segment in segments:
+			atoms = [value.strip() for value in segment.split(";") if value.strip()]
+			if not atoms or len(atoms) > 8:
+				invalid_segment = True
+				break
+		if not label or len(label) > 256 or segment_count > 8 or invalid_segment:
+			reason = "corpus_examples query rejected locally: use a nonempty annotation expression with at most 8 hyphen-separated segments, at most 8 nonempty semicolon-separated atoms per segment, and at most 256 characters"
 			return {"success": True, "label": "{} [QUERY_REJECTED: {}]".format(label[:160], reason), "examples": [], "query_rejected": True, "error": reason, "segment_count": segment_count}
 		if exclude_job_id is None:
 			exclude_job_id = self.exclude_job_id
