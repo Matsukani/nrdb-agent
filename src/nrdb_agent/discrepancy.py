@@ -111,6 +111,7 @@ def list_discoveries(directory=".", recursive=False, latest=None):
 		if stage is None:
 			continue
 		selection = payload.get("selection") or {}
+		models = payload.get("models") or {}
 		summary = payload.get("summary") or {}
 		rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
 		failed = int(summary.get("failed") or 0)
@@ -123,8 +124,9 @@ def list_discoveries(directory=".", recursive=False, latest=None):
 			"annotation_schema_id": selection.get("annotation_schema_id"), "region": selection.get("region"),
 			"dataset_ids": list(selection.get("dataset_ids") or []), "rows": len(rows),
 			"sampled_rows_by_id": dict(selection.get("sampled_rows_by_id") or {}),
-			"translation_model": (payload.get("models") or {}).get("translation"),
-			"discrepancy_model": (payload.get("models") or {}).get("discrepancy"),
+			"translation_model": models.get("translation"),
+			"discrepancy_model": models.get("discrepancy"),
+			"morphology": models.get("morphology") or ("gold_required" if selection.get("require_gold_morph") else "predicted"),
 			"counts": dict(summary.get("counts") or {}), "failed_rows": failed,
 			"estimated_cost_usd": summary.get("estimated_cost_usd"), "pricing_complete": summary.get("pricing_complete"),
 		})
@@ -146,7 +148,7 @@ def _row_targets(row, target_ids):
 
 
 def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region, limit=100,
-	seed=1, min_morphemes=1, require_all=False, output=None):
+	seed=1, min_morphemes=1, require_all=False, require_gold_morph=False, output=None):
 	target_ids = list(dict.fromkeys(str(value).strip() for value in target_ids if str(value).strip()))
 	if not target_ids:
 		raise ValueError("at least one target morpheme ID is required")
@@ -159,6 +161,8 @@ def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region
 		if str(row.get("dialect_region") or "").strip() != str(region).strip():
 			continue
 		if not str(row.get("translation_jp") or "").strip():
+			continue
+		if require_gold_morph and (not str(row.get("gold_segmented") or "").strip() or not str(row.get("gold_annotation") or "").strip()):
 			continue
 		if _morpheme_count(row.get("gold_annotation")) < int(min_morphemes):
 			continue
@@ -196,6 +200,7 @@ def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region
 			"target_ids": target_ids, "dataset_ids": dataset_ids,
 			"annotation_schema_id": int(annotation_schema_id), "region": str(region),
 			"limit_per_id": int(limit), "limit": int(limit), "seed": int(seed), "min_morphemes": int(min_morphemes),
+			"require_gold_morph": bool(require_gold_morph),
 			"match": "all" if require_all else "independent_per_id",
 			"eligible_pool_size_by_id": pool_sizes, "sampled_rows_by_id": sampled_by_id,
 			"eligible_assignments": sum(pool_sizes.values()), "sampled_assignments": len(selected),
@@ -237,8 +242,12 @@ class DiscrepancyJudge(AnnotationAgent):
 		}, REPAIR_INSTRUCTIONS, REPAIR_FORMAT)
 
 
-def _models_payload(translation_model, discrepancy_model):
-	return {"translation": str(translation_model), "discrepancy": str(discrepancy_model), "id_critic": "nrdb_agent_default"}
+def _models_payload(translation_model, discrepancy_model, gold_morph=False):
+	return {
+		"translation": str(translation_model), "discrepancy": str(discrepancy_model),
+		"morphology": "gold" if gold_morph else "predicted",
+		"id_critic": "not_used" if gold_morph else "nrdb_agent_default",
+	}
 
 
 def _summary(rows, field, values):
@@ -318,13 +327,15 @@ def _with_costs(summary, rows, result_key, discrepancy_usage):
 
 
 def run_discovery(nrdb, discovery_path, output, translation_model="gpt-5.6-luna",
-	discrepancy_model="gpt-5.6-terra", openai_client=None, progress=print):
+	discrepancy_model="gpt-5.6-terra", use_gold_morph=False, openai_client=None, progress=print):
 	discovery = _read(discovery_path, DISCOVERY_FORMAT)
+	if use_gold_morph and not discovery.get("selection", {}).get("require_gold_morph"):
+		raise ValueError("--gold-morph requires a cohort created with discrepancy-create --gold-morph")
 	tracker = UsageTracker()
 	judge = DiscrepancyJudge(nrdb, discrepancy_model, client=tracked_client(openai_client, tracker), progress=progress)
 	result = {
 		"format": BASELINE_FORMAT, "selection": discovery["selection"],
-		"models": _models_payload(translation_model, discrepancy_model), "rows": [],
+		"models": _models_payload(translation_model, discrepancy_model, use_gold_morph), "rows": [],
 	}
 	for index, source in enumerate(discovery["rows"], start=1):
 		progress("[{}/{}] baseline sentence {}".format(index, len(discovery["rows"]), source["sentence_id"]))
@@ -334,6 +345,8 @@ def run_discovery(nrdb, discovery_path, output, translation_model="gpt-5.6-luna"
 				nrdb, source["source"], "japanese", discovery["selection"]["annotation_schema_id"], discovery["selection"]["region"],
 				dialect_ids=[source["dialect_id"]], model_name=translation_model, semantic_feedback="none",
 				use_constructions=False, openai_client=openai_client, progress=progress,
+				fixed_segmented=source["gold_segmented"] if use_gold_morph else None,
+				fixed_annotation=source["gold_annotation"] if use_gold_morph else None,
 			)
 			row["baseline"] = generated
 			row["baseline_judgment"] = judge.discrepancy(row, generated)
@@ -354,6 +367,7 @@ def check_discovery(nrdb, baseline_path, output, translation_model=None,
 	discrepancy_model="gpt-5.6-terra", openai_client=None, progress=print):
 	baseline = _read(baseline_path, BASELINE_FORMAT)
 	baseline_model = str((baseline.get("models") or {}).get("translation") or "")
+	use_gold_morph = str((baseline.get("models") or {}).get("morphology") or "predicted") == "gold"
 	translation_model = str(translation_model or baseline_model)
 	if translation_model != baseline_model:
 		raise ValueError("repair check must use the baseline translation model {!r}".format(baseline_model))
@@ -361,7 +375,7 @@ def check_discovery(nrdb, baseline_path, output, translation_model=None,
 	judge = DiscrepancyJudge(nrdb, discrepancy_model, client=tracked_client(openai_client, tracker), progress=progress)
 	result = {
 		"format": CHECK_FORMAT, "selection": baseline["selection"],
-		"models": _models_payload(translation_model, discrepancy_model), "baseline_artifact": str(baseline_path), "rows": [],
+		"models": _models_payload(translation_model, discrepancy_model, use_gold_morph), "baseline_artifact": str(baseline_path), "rows": [],
 	}
 	for index, source in enumerate(baseline["rows"], start=1):
 		progress("[{}/{}] construction check sentence {}".format(index, len(baseline["rows"]), source["sentence_id"]))
@@ -374,6 +388,8 @@ def check_discovery(nrdb, baseline_path, output, translation_model=None,
 					nrdb, source["source"], "japanese", baseline["selection"]["annotation_schema_id"], baseline["selection"]["region"],
 					dialect_ids=[source["dialect_id"]], model_name=translation_model, semantic_feedback="none",
 					use_constructions=True, openai_client=openai_client, progress=progress,
+					fixed_segmented=source["gold_segmented"] if use_gold_morph else None,
+					fixed_annotation=source["gold_annotation"] if use_gold_morph else None,
 				)
 				row["construction"] = construction
 				row["repair_judgment"] = judge.repair(row, source["baseline"], construction)

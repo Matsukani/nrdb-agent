@@ -70,7 +70,8 @@ def _annotate_with_json_retry(agent, item, job, morph, progress):
 def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None,
 	model_name="gpt-5.6", surface_model=None, id_model=None, semantic_feedback="generated",
 	require_semantic_feedback=False, use_constructions=False, use_licensed_forms=False,
-	existing_translation=None, openai_client=None, progress=print):
+	existing_translation=None, fixed_segmented=None, fixed_annotation=None,
+	openai_client=None, progress=print):
 	text = str(text or "").strip()
 	region = str(region or "").strip()
 	use_constructions = bool(use_constructions)
@@ -97,23 +98,34 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 
 	if target == "japanese":
 		dialect_id = dialects[0]
+		fixed_segmented = str(fixed_segmented or "").strip()
+		fixed_annotation = str(fixed_annotation or "").strip()
+		if bool(fixed_segmented) != bool(fixed_annotation):
+			raise ValueError("fixed morphology requires both segmentation and annotation")
+		use_fixed_morphology = bool(fixed_segmented and fixed_annotation)
 		existing_translation = str(existing_translation or "").strip()
 		if semantic_feedback == "existing" and require_semantic_feedback and not existing_translation:
 			raise ValueError("semantic_feedback=existing requires --existing-translation")
-		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} forward=annotation-v9 model={} semantic_feedback={} constructions={} licensed={}".format(
+		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} forward=annotation-v9 model={} semantic_feedback={} constructions={} licensed={} morphology={}".format(
 			region, dialect_id, annotation_schema_id, model_name, semantic_feedback,
 			"on" if use_constructions else "off", "on" if use_licensed_forms else "off",
+			"gold" if use_fixed_morphology else "predicted",
 		))
-		progress("  morph: analyze")
-		morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
+		if use_fixed_morphology:
+			progress("  morph: use frozen gold segmentation and annotation")
+			morph = {"segmented": fixed_segmented, "annotation": fixed_annotation, "inference": {}}
+		else:
+			progress("  morph: analyze")
+			morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
 		licensed = None
 		if use_licensed_forms:
 			licensed = nrdb.licensed_forms_in_text(text, annotation_schema_id, region, dialect_id)
 			morph["licensed_realizations"] = licensed
 			progress("  licensed: grammar-derived surface matches={}".format(len(licensed.get("matches", []))))
-		_trace_morph_provenance(progress, morph)
+		if not use_fixed_morphology:
+			_trace_morph_provenance(progress, morph)
 		progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
-		if id_model:
+		if id_model and not use_fixed_morphology:
 			progress("  forward ID critic: {}".format(id_model))
 		item = {"sentence_id": 0, "dialect_id": dialect_id, "dialect_region": region, "text": text, "translation_jp": existing_translation if semantic_feedback in {"existing", "auto"} else None}
 		job = {
@@ -121,11 +133,14 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			"prompt_version": "annotation-v9", "task": "morph-translate",
 			"semantic_feedback": semantic_feedback, "require_semantic_feedback": bool(require_semantic_feedback),
 			"use_constructions": use_constructions, "use_licensed_forms": use_licensed_forms,
-			"morphology_source": "predict", "produce_translation": True, "blind_translation": False,
+			"morphology_source": "existing" if use_fixed_morphology else "predict", "produce_translation": True, "blind_translation": False,
 		}
 		agent_class = LicensedTaskAwareAnnotationAgent if use_licensed_forms else TaskAwareAnnotationAgent
-		agent = agent_class(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
-		result = _annotate_with_json_retry(agent, item, job, morph, progress)
+		agent = agent_class(nrdb, model_name, client=client, progress=progress, id_model_path=None if use_fixed_morphology else id_model)
+		if use_fixed_morphology:
+			result = agent.translate_frozen(item, job, fixed_segmented, fixed_annotation)
+		else:
+			result = _annotate_with_json_retry(agent, item, job, morph, progress)
 		if licensed is not None:
 			result.setdefault("evidence", {})["licensed_realizations"] = licensed
 		usage = usage_tracker.summary()
@@ -134,6 +149,7 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			"direction": "miyako_to_japanese", "source": text, "region": region,
 			"annotation_schema_id": annotation_schema_id, "morph_dialect_id": dialect_id,
 			"morph_inference": _morph_provenance(morph), "llm_model": model_name,
+			"morphology_source": "gold" if use_fixed_morphology else "predicted",
 			"semantic_feedback": semantic_feedback, "use_constructions": use_constructions,
 			"use_licensed_forms": use_licensed_forms,
 			"segmented": result.get("segmented", ""), "annotation": result.get("annotation", ""),

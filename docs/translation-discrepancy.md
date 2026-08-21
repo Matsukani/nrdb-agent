@@ -14,6 +14,7 @@ nrdb-agent discrepancy-create adv foc 'ppt>2' \
 	--region 宮古 \
 	--limit 50 \
 	--min-morphemes 4 \
+	--gold-morph \
 	--seed 42 \
 	--output discovery.json
 ```
@@ -30,16 +31,21 @@ Dataset scope is optional. One option accepts several IDs, and the option may al
 
 Selection uses the human gold annotation, but generation never receives the gold translation. The frozen artifact records the sampled sentence identities and complete evaluation inputs.
 
+`--gold-morph` restricts creation to rows carrying both gold segmentation and gold annotation and records that requirement in the artifact. Use it for the first experiment, where grammatical translation is evaluated independently of automatic morphology.
+
 ## 2. Generate and discover discrepancies
 
 ```bash
 nrdb-agent discrepancy-run discovery.json \
 	--translation-model gpt-5.6-luna \
 	--discrepancy-model gpt-5.6-terra \
+	--gold-morph \
 	--output baseline.json
 ```
 
-`--translation-model` controls blind translation generation. `--discrepancy-model` independently controls semantic evaluation against gold. Generation uses the normal nrdb-agent ID-critic configuration: the deployed NRDB morph analysis plus `NRDB_ID_MODEL` when that environment variable is configured. This workflow deliberately provides no separate ID-model override.
+`--translation-model` controls blind translation generation. `--discrepancy-model` independently controls semantic evaluation against gold. Without `--gold-morph`, generation uses the normal nrdb-agent ID-critic configuration: the deployed NRDB morph analysis plus `NRDB_ID_MODEL` when that environment variable is configured. This workflow deliberately provides no separate ID-model override.
+
+With `--gold-morph`, generation skips NRDB morph prediction and the ID critic and translates from the frozen human segmentation and annotation. The option is accepted only for a cohort created with `discrepancy-create --gold-morph`. `discrepancy-check` automatically inherits the baseline morphology mode, so baseline and construction-assisted translations always use the same morphology.
 
 The discrepancy judge accepts semantic paraphrases and separately identifies target-morpheme errors, unrelated lexical differences, free gold translations, and missing-context cases. The baseline summary ranks `morphemes_to_analyse` by attributed severity and records recurring discrepancy types, candidate patterns, and examples. Translation and discrepancy-model usage and estimated costs are reported separately and together.
 
