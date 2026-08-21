@@ -37,7 +37,7 @@ class SemanticHarness(TaskAwareAnnotationAgent):
 		self.review_calls += 1
 		if self.revise:
 			return {
-				"action": "revise", "segmented": "a-b-c", "annotation": "A-B-C",
+				"action": "revise", "segmented": "a-b", "annotation": "A-C",
 				"confidence": 0.95, "changed_ids": ["C"], "note": "semantic mismatch",
 			}
 		return {
@@ -69,7 +69,7 @@ def _morph():
 def test_generated_feedback_can_review_morph_without_translation_output():
 	agent = SemanticHarness(revise=True)
 	result = agent.annotate(_item(), _job(task="morph", feedback="generated"), _morph())
-	assert result["annotation"] == "A-B-C"
+	assert result["annotation"] == "A-C"
 	assert result["trsl_ai"] == ""
 	assert agent.generated_calls == 1
 	assert agent.review_calls == 1
@@ -88,7 +88,7 @@ def test_translation_output_does_not_imply_semantic_feedback():
 def test_generated_feedback_translation_is_regenerated_after_revision():
 	agent = SemanticHarness(revise=True)
 	result = agent.annotate(_item(), _job(task="morph-translate", feedback="generated"), _morph())
-	assert result["annotation"] == "A-B-C"
+	assert result["annotation"] == "A-C"
 	assert result["trsl_ai"] == "訳2"
 	assert agent.generated_calls == 2
 	assert agent.review_calls == 1

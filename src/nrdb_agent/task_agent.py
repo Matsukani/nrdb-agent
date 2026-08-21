@@ -221,16 +221,19 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 			# after a valid sequence of tool calls. Never discard a paid row for a
 			# formatting failure: preserve the specialized morph baseline instead.
 			result = self._malformed_final_fallback(morph_result, error)
+		result = self._enforce_forward_morph_policy(morph_result, result, "annotation", item.get("text"))
 
 		generated_feedback = None
 		generated_feedback_matches_final = False
 		if result.get("annotation") and result.get("decision") != "failed":
 			if active_feedback == "existing" and human_translation:
 				result = self._review_against_human_translation(item, job, result)
+				result = self._enforce_forward_morph_policy(morph_result, result, "existing_semantic_review", item.get("text"))
 			elif active_feedback == "generated":
 				before = (result.get("segmented"), result.get("annotation"))
 				generated_feedback = self._generate_translation(item, job, result)
 				result = self._review_against_generated_translation(item, job, result, generated_feedback)
+				result = self._enforce_forward_morph_policy(morph_result, result, "generated_semantic_review", item.get("text"))
 				after = (result.get("segmented"), result.get("annotation"))
 				generated_feedback_matches_final = before == after
 			elif semantic_mode != "none" and require_feedback:

@@ -40,15 +40,14 @@ nrdb-asr eval-manifest \
 Then review those hypotheses from the `nrdb-agent` environment:
 
 ```bash
-export NRDB_ID_MODEL=../nrdb-morph/training-runs/.../id_sequence_model.json
-export NRDB_SURFACE_MODEL=../nrdb-morph/training-runs/.../surface_model_v2.json
-
 nrdb-agent asr-review PATH/TO/eval-nbest10/predictions.tsv \
   --out-dir PATH/TO/asr-review10 \
   --annotation-schema 2 \
-  --region 宮古 \
-  --dialect 19 \
-  --limit 10
+	--region 宮古 \
+	--dialect 19 \
+	--id-model ../nrdb-morph/training-runs/.../id_sequence_model.json \
+	--surface-model ../nrdb-morph/training-runs/.../surface_model_v2.json \
+	--limit 10
 ```
 
 Use `--no-llm` to run only the deterministic linguistic baseline. This is useful for a full-test-set zero-API-cost pass before running the LLM selector.

@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import hashlib
 from pathlib import Path
 
 from .blindness import normalize_blind_policy, normalize_evidence_scope
@@ -8,11 +9,13 @@ from .dataset_io import write_json, write_tsv
 from .licensed_agent import LicensedTaskAwareAnnotationAgent
 from .metrics import annotation_metrics, segmentation_metrics
 from .morph_eval import _paired_summary, _result_row, _run_contract
+from .policy import forward_morph_policy
 from .task_agent import SEMANTIC_FEEDBACK_MODES, TaskAwareAnnotationAgent
 from .usage import UsageTracker, tracked_client
 
 
-CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v6"
+CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v7"
+COHORT_FORMAT = "nrdb-agent.morph-eval-cohort.v1"
 TRANSLATION_FILTERS = {"any", "present", "absent"}
 
 
@@ -120,7 +123,45 @@ def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
 	}
 
 
-def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_model, id_model,
+def _cohort_fingerprint(rows):
+	identity = [[int(row["dataset_id"]), str(row.get("example_id") or ""), int(row["sentence_id"])] for row in rows]
+	return hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _load_frozen_cohort(path, contract):
+	payload = json.loads(Path(path).read_text(encoding="utf-8"))
+	if payload.get("format") != COHORT_FORMAT or not isinstance(payload.get("rows"), list):
+		raise ValueError("invalid frozen morph-eval cohort: {}".format(path))
+	if payload.get("train_path") != _canonical_path(contract["train_path"]):
+		raise ValueError("frozen cohort belongs to a different morph training split")
+	rows = payload["rows"]
+	if payload.get("fingerprint") != _cohort_fingerprint(rows):
+		raise ValueError("frozen cohort fingerprint mismatch")
+	return {
+		"rows": rows,
+		"dataset_ids": sorted({int(row["dataset_id"]) for row in rows}),
+		"registered_gold_rows": int(payload.get("registered_gold_rows") or len(rows)),
+		"eligible_pool_size": int(payload.get("eligible_pool_size") or len(rows)),
+		"unmatched_identity": int(payload.get("unmatched_identity") or 0),
+		"text_internal_id": payload.get("text_internal_id"),
+		"frozen_cohort": _canonical_path(path),
+	}
+
+
+def _write_frozen_cohort(path, contract, cohort):
+	payload = {
+		"format": COHORT_FORMAT, "morph_run": _canonical_path(contract["run_dir"]),
+		"train_path": _canonical_path(contract["train_path"]), "dataset_ids": cohort["dataset_ids"],
+		"text_internal_id": cohort.get("text_internal_id"),
+		"registered_gold_rows": cohort["registered_gold_rows"], "eligible_pool_size": cohort["eligible_pool_size"],
+		"unmatched_identity": cohort["unmatched_identity"], "rows": cohort["rows"],
+		"fingerprint": _cohort_fingerprint(cohort["rows"]),
+	}
+	write_json(path, payload)
+	return payload
+
+
+def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_model, policy,
 	semantic_feedback, require_semantic_feedback, translation_filter, evidence_exclusion,
 	use_licensed_forms, blind_policy):
 	return {
@@ -135,7 +176,8 @@ def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_m
 		"seed": int(seed),
 		"agent_model": str(model_name),
 		"expected_morph_model": str(expected_morph_model or ""),
-		"id_model": _canonical_path(id_model),
+		"forward_morph_policy": policy.manifest(),
+		"cohort_fingerprint": _cohort_fingerprint(cohort["rows"]),
 		"semantic_feedback": str(semantic_feedback),
 		"require_semantic_feedback": bool(require_semantic_feedback),
 		"translation_filter": str(translation_filter),
@@ -150,7 +192,7 @@ def _verify_checkpoint(expected, actual):
 		raise ValueError("checkpoint has no metadata record")
 	for key in (
 		"format", "morph_run", "train_path", "datasets", "text_internal_id", "cohort_sentence_ids",
-		"limit", "seed", "agent_model", "expected_morph_model", "id_model",
+		"limit", "seed", "agent_model", "expected_morph_model", "forward_morph_policy", "cohort_fingerprint",
 		"semantic_feedback", "require_semantic_feedback", "translation_filter", "evidence_exclusion",
 		"blind_policy",
 	):
@@ -161,7 +203,9 @@ def _verify_checkpoint(expected, actual):
 
 
 def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=None, seed=1,
-	dataset_ids=None, expected_morph_model=None, id_model=None, output=None, checkpoint=None,
+	dataset_ids=None, expected_morph_model=None, id_model=None, surface_model=None,
+	morph_review="agent", resegmentation=False, max_segmentation_candidates=4,
+	output=None, checkpoint=None, cohort_in=None, cohort_out=None,
 	resume=False, semantic_feedback="none", require_semantic_feedback=False,
 	translation_filter="any", text_internal_id=None, evidence_exclude_datasets=None,
 	evidence_exclude_texts=None, evidence_exclude_sentence_ranges=None, use_licensed_forms=False,
@@ -177,15 +221,23 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		raise ValueError("invalid translation_filter: {}".format(translation_filter))
 	if require_semantic_feedback and semantic_feedback == "none":
 		raise ValueError("require_semantic_feedback cannot be used with semantic_feedback=none")
+	policy = forward_morph_policy(
+		review=morph_review, resegmentation=resegmentation, id_model=id_model, surface_model=surface_model,
+		max_segmentation_candidates=max_segmentation_candidates, morphology_source="predict", task="morph",
+	)
+	if not policy.agent_review and (semantic_feedback != "none" or use_licensed_forms):
+		raise ValueError("semantic feedback and licensed evidence require --morph-review agent")
 	if text_internal_id is not None:
 		text_internal_id = int(text_internal_id)
 		if text_internal_id < 1:
 			raise ValueError("text_internal_id must be positive")
 	contract = _run_contract(run_dir)
-	cohort = _build_cohort(
+	cohort = _load_frozen_cohort(cohort_in, contract) if cohort_in else _build_cohort(
 		nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
 		require_semantic_feedback, translation_filter, text_internal_id=text_internal_id,
 	)
+	if cohort_out:
+		_write_frozen_cohort(cohort_out, contract, cohort)
 	auto_text = None
 	if text_internal_id is not None:
 		auto_text = (cohort["dataset_ids"][0], text_internal_id)
@@ -207,9 +259,10 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		evidence_exclusion["datasets"], evidence_exclusion["texts"], evidence_exclusion["sentence_ranges"],
 	))
 	progress("licensed forms: {}".format("on" if use_licensed_forms else "off"))
+	progress("forward morphology policy: {}".format(policy.json()))
 	checkpoint_path = _checkpoint_path(output=output, checkpoint=checkpoint)
 	expected_meta = _checkpoint_meta(
-		contract, cohort, model_name, limit, seed, expected_morph_model, id_model,
+		contract, cohort, model_name, limit, seed, expected_morph_model, policy,
 		semantic_feedback, require_semantic_feedback, translation_filter, evidence_exclusion,
 		use_licensed_forms, blind_policy,
 	)
@@ -270,9 +323,15 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 			"produce_translation": False,
 			"blind_translation": False,
 		}
-		agent_class = LicensedTaskAwareAnnotationAgent if use_licensed_forms else TaskAwareAnnotationAgent
-		agent = agent_class(nrdb, model_name, client=client, progress=progress, id_model_path=id_model)
-		agent_result = agent.annotate(item, job, baseline)
+		if policy.agent_review:
+			agent_class = LicensedTaskAwareAnnotationAgent if use_licensed_forms else TaskAwareAnnotationAgent
+			agent = agent_class(nrdb, model_name, client=client, progress=progress, morph_policy=policy)
+			agent_result = agent.annotate(item, job, baseline)
+		else:
+			agent_result = {
+				"segmented": baseline.get("segmented", ""), "annotation": baseline.get("annotation", ""),
+				"decision": "proposed", "confidence": 1.0, "evidence": {"morph_review": {"mode": "none"}},
+			}
 		usage = tracker.summary()
 		agent_metrics = annotation_metrics(agent_result.get("annotation"), source["gold_annotation"])
 		agent_seg = segmentation_metrics(agent_result.get("segmented"), source["gold_segmented"])
@@ -282,6 +341,7 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		row["existing_translation_present"] = int(bool(existing_translation))
 		row["internal_text_id"] = source.get("internal_text_id") or ""
 		row["evidence_exclusion_json"] = json.dumps(evidence_exclusion, ensure_ascii=False, separators=(",", ":"))
+		row["forward_morph_policy_json"] = policy.json()
 
 		_append_jsonl(checkpoint_path, {"record_type": "row", "row": row})
 		results.append(row)
@@ -319,6 +379,9 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		"translation_filter": translation_filter,
 		"blind_policy": blind_policy,
 		"use_licensed_forms": use_licensed_forms,
+		"forward_morph_policy": policy.manifest(),
+		"cohort_fingerprint": _cohort_fingerprint(cohort["rows"]),
+		"cohort_in": _canonical_path(cohort_in), "cohort_out": _canonical_path(cohort_out),
 		"evidence_exclusion": evidence_exclusion,
 		"estimated_cost_usd": total_cost,
 		"pricing_complete": pricing_complete,

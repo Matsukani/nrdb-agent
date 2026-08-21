@@ -148,7 +148,13 @@ def item_matches_needs(item, needs):
 def output_row(item, result=None, error=None):
 	row = dict(item.get("_original") or {})
 	result = result or {}
+	baseline = result.get("morph_baseline") if isinstance(result.get("morph_baseline"), dict) else {}
+	inference = baseline.get("inference") if isinstance(baseline.get("inference"), dict) else {}
 	row.update({
+		"morph_segmented": baseline.get("segmented", ""),
+		"morph_annotation": baseline.get("annotation", ""),
+		"morph_source": baseline.get("source", ""),
+		"morph_model_id": inference.get("model_id", ""),
 		"ai_segmented": result.get("segmented", ""),
 		"ai_annotation": result.get("annotation", ""),
 		"ai_translation": result.get("translation", ""),
@@ -158,6 +164,7 @@ def output_row(item, result=None, error=None):
 		"ai_model": result.get("model", ""),
 		"ai_error": str(error or ""),
 		"ai_evidence_json": json.dumps(result.get("evidence", {}), ensure_ascii=False, separators=(",", ":")) if result else "",
+		"ai_forward_morph_policy_json": json.dumps(result.get("forward_morph_policy", {}), ensure_ascii=False, separators=(",", ":")) if result else "",
 	})
 	return row
 

@@ -1,6 +1,5 @@
 import argparse
 import json
-import os
 
 from .morph_eval_resumable import evaluate_morph_agent_resumable
 from .nrdb import NrdbClient
@@ -177,7 +176,13 @@ def main(argv=None):
 	parser.add_argument("--blind-policy", choices=["row", "cohort"], default="row", help="row excludes only the current gold row; cohort excludes every sampled evaluation row from corpus evidence")
 	parser.add_argument("--translation-filter", choices=TRANSLATION_FILTER_CHOICES, default="any", help="Select rows by existing translation availability independently of semantic feedback")
 	parser.add_argument("--expected-morph-model", default=None, help="fail if /analyze reports a different deployed morph model ID")
-	parser.add_argument("--id-model", default=None, help="ID-sequence critic; defaults to NRDB_ID_MODEL")
+	parser.add_argument("--morph-review", choices=["none", "agent"], default="agent", help="Use the raw morph model only, or let the agent review it")
+	parser.add_argument("--resegmentation", action="store_true", help="Explicitly allow one bounded batch of fixed-segmentation probes")
+	parser.add_argument("--id-model", default=None, help="Explicit ID-sequence critic path")
+	parser.add_argument("--surface-model", default=None, help="Explicit surface critic path")
+	parser.add_argument("--max-segmentation-candidates", type=_positive_int, default=4)
+	parser.add_argument("--cohort-in", default=None, help="Reuse an exact frozen cohort JSON")
+	parser.add_argument("--cohort-out", default=None, help="Write the selected exact cohort for later orthogonal runs")
 	parser.add_argument("--output", default=None, help="write per-row .tsv or complete .json; also defines default checkpoint path")
 	parser.add_argument("--checkpoint", default=None, help="durable JSONL checkpoint path; defaults to OUTPUT.checkpoint.jsonl")
 	parser.add_argument("--resume", action="store_true", help="resume the exact same cohort and evidence boundary from an existing durable checkpoint")
@@ -200,7 +205,9 @@ def main(argv=None):
 	value = evaluate_morph_agent_resumable(
 		nrdb, args.morph_run, model_name=args.model, limit=args.limit, seed=args.seed,
 		dataset_ids=args.dataset_ids, expected_morph_model=args.expected_morph_model,
-		id_model=args.id_model or os.environ.get("NRDB_ID_MODEL"), output=args.output,
+		id_model=args.id_model, surface_model=args.surface_model, morph_review=args.morph_review,
+		resegmentation=args.resegmentation, max_segmentation_candidates=args.max_segmentation_candidates,
+		output=args.output, cohort_in=args.cohort_in, cohort_out=args.cohort_out,
 		checkpoint=args.checkpoint, resume=args.resume,
 		semantic_feedback=args.semantic_feedback,
 		require_semantic_feedback=args.require_semantic_feedback,

@@ -1,6 +1,5 @@
 import csv
 import json
-import os
 from pathlib import Path
 
 from .annotator import AnnotationAgent, _compact_tool_result, _response_output_as_input
@@ -316,8 +315,6 @@ def review_asr_predictions(
 	openai_client=None,
 	progress=print,
 ):
-	id_model_path = id_model_path or os.environ.get("NRDB_ID_MODEL")
-	surface_model_path = surface_model_path or os.environ.get("NRDB_SURFACE_MODEL")
 	id_critic = IdSequenceCritic(id_model_path) if id_model_path else None
 	surface_critic = SurfaceModelCritic(surface_model_path) if surface_model_path else None
 	phrase_boundary_model = _load_phrase_boundary_model(phrase_boundary_model_path)

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from .dataset_io import item_matches_needs, load_dataset, output_row, write_json, write_tsv
+from .policy import forward_morph_policy
 from .workflow import execute_item
 
 
@@ -14,13 +15,18 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 	annotation_schema_id=None, region=None, default_dialect_id=None,
 	semantic_feedback="none", require_semantic_feedback=False, use_constructions=False,
 	use_licensed_forms=False, morphology_source="predict", needs="any",
-	target_dialect_ids=None, id_model=None, surface_model=None, output=None, limit=None,
+	target_dialect_ids=None, id_model=None, surface_model=None, morph_review="agent",
+	resegmentation=False, max_segmentation_candidates=4, output=None, limit=None,
 	progress=print, translation_evidence=None):
 	bundle = load_dataset(
 		input_path, component=component, annotation_schema_id=annotation_schema_id,
 		region=region, default_dialect_id=default_dialect_id,
 	)
 	selected = [item for item in bundle["items"] if item_matches_needs(item, needs)]
+	policy = forward_morph_policy(
+		review=morph_review, resegmentation=resegmentation, id_model=id_model, surface_model=surface_model,
+		max_segmentation_candidates=max_segmentation_candidates, morphology_source=morphology_source, task=task,
+	)
 	if limit is not None:
 		selected = selected[:max(0, int(limit))]
 	rows = []
@@ -54,6 +60,9 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 				translation_evidence=translation_evidence,
 				morphology_source=morphology_source, target_dialect_ids=target_dialect_ids,
 				id_model=id_model, surface_model=surface_model, progress=progress,
+				morph_review=morph_review, resegmentation=resegmentation,
+				max_segmentation_candidates=max_segmentation_candidates,
+				morph_policy=policy,
 			)
 			rows.append(output_row(source_item, result=result))
 			cost += float(result.get("estimated_cost_usd") or 0.0)
@@ -77,6 +86,7 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 		"semantic_feedback": semantic_feedback, "require_semantic_feedback": bool(require_semantic_feedback),
 		"use_constructions": bool(use_constructions), "use_licensed_forms": bool(use_licensed_forms),
 		"morphology_source": morphology_source, "needs": needs, "model": model_name,
+		"morph_review": morph_review, "resegmentation": bool(resegmentation),
 		"counts": {"input": len(bundle["items"]), "selected": len(selected), "completed": completed, "failed": failed},
 		"estimated_cost_usd": cost, "pricing_complete": pricing_complete, "rows": rows,
 	}

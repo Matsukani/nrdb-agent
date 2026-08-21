@@ -7,6 +7,7 @@ from pathlib import Path
 from .annotator import AnnotationAgent, _response_incomplete_reason
 from .blindness import normalize_blind_policy, normalize_evidence_scope
 from .metrics import annotation_ids
+from .policy import policy_from_manifest
 from .translate import translate_text
 from .usage import UsageTracker, tracked_client
 
@@ -152,7 +153,7 @@ def _row_targets(row, target_ids):
 
 def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region, limit=100,
 	seed=1, min_morphemes=1, require_all=False, require_gold_morph=False,
-	use_constructions=False, blind_policy="row", output=None):
+	use_constructions=False, blind_policy="row", execution_policy=None, output=None):
 	blind_policy = normalize_blind_policy(blind_policy)
 	target_ids = list(dict.fromkeys(str(value).strip() for value in target_ids if str(value).strip()))
 	if not target_ids:
@@ -208,6 +209,7 @@ def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region
 			"limit_per_id": int(limit), "limit": int(limit), "seed": int(seed), "min_morphemes": int(min_morphemes),
 			"require_gold_morph": bool(require_gold_morph), "baseline_use_constructions": bool(use_constructions),
 			"blind_policy": blind_policy, "evidence_exclusion": evidence_exclusion,
+			"forward_morph_policy": dict(execution_policy or {}),
 			"match": "all" if require_all else "independent_per_id",
 			"eligible_pool_size_by_id": pool_sizes, "sampled_rows_by_id": sampled_by_id,
 			"eligible_assignments": sum(pool_sizes.values()), "sampled_assignments": len(selected),
@@ -269,11 +271,11 @@ class DiscrepancyJudge(AnnotationAgent):
 		}, REPAIR_INSTRUCTIONS, REPAIR_FORMAT)
 
 
-def _models_payload(translation_model, discrepancy_model, gold_morph=False, use_constructions=False):
+def _models_payload(translation_model, discrepancy_model, policy, gold_morph=False, use_constructions=False):
 	return {
 		"translation": str(translation_model), "discrepancy": str(discrepancy_model),
 		"morphology": "gold" if gold_morph else "predicted",
-		"id_critic": "not_used" if gold_morph else "nrdb_agent_default",
+		"forward_morph_policy": policy.manifest(),
 		"constructions": "enabled_current" if use_constructions else "disabled",
 	}
 
@@ -358,6 +360,8 @@ def run_discovery(nrdb, discovery_path, output, translation_model="gpt-5.6-luna"
 	discrepancy_model="gpt-5.6-terra", use_gold_morph=False, use_constructions=False,
 	openai_client=None, progress=print):
 	discovery = _read(discovery_path, DISCOVERY_FORMAT)
+	policy = policy_from_manifest((discovery.get("selection") or {}).get("forward_morph_policy") or {})
+	policy.validate(morphology_source="gold" if use_gold_morph else "predict", task="morph-translate")
 	blind_policy, evidence_exclusion = _apply_discovery_blindness(nrdb, discovery.get("selection") or {})
 	progress("blind policy: {} | evidence exclusion ranges={}".format(blind_policy, len(evidence_exclusion.get("sentence_ranges", []))))
 	if use_gold_morph and not discovery.get("selection", {}).get("require_gold_morph"):
@@ -370,7 +374,7 @@ def run_discovery(nrdb, discovery_path, output, translation_model="gpt-5.6-luna"
 	judge = DiscrepancyJudge(nrdb, discrepancy_model, client=tracked_client(openai_client, tracker), progress=progress)
 	result = {
 		"format": BASELINE_FORMAT, "selection": discovery["selection"],
-		"models": _models_payload(translation_model, discrepancy_model, use_gold_morph, use_constructions), "rows": [],
+		"models": _models_payload(translation_model, discrepancy_model, policy, use_gold_morph, use_constructions), "rows": [],
 	}
 	for index, source in enumerate(discovery["rows"], start=1):
 		progress("[{}/{}] baseline sentence {}".format(index, len(discovery["rows"]), source["sentence_id"]))
@@ -380,6 +384,10 @@ def run_discovery(nrdb, discovery_path, output, translation_model="gpt-5.6-luna"
 				nrdb, source["source"], "japanese", discovery["selection"]["annotation_schema_id"], discovery["selection"]["region"],
 				dialect_ids=[source["dialect_id"]], model_name=translation_model, semantic_feedback="none",
 				use_constructions=use_constructions, openai_client=openai_client, progress=progress,
+				morph_review=policy.review, resegmentation=policy.resegmentation,
+				id_model=policy.id_model_path, surface_model=policy.surface_model_path,
+				max_segmentation_candidates=policy.max_segmentation_candidates,
+				morph_policy=policy,
 				fixed_segmented=source["gold_segmented"] if use_gold_morph else None,
 				fixed_annotation=source["gold_annotation"] if use_gold_morph else None,
 				sentence_id=_blind_sentence_id(blind_policy, source),
@@ -406,6 +414,8 @@ def check_discovery(nrdb, baseline_path, output, translation_model=None,
 	progress("blind policy: {} | evidence exclusion ranges={}".format(blind_policy, len(evidence_exclusion.get("sentence_ranges", []))))
 	baseline_model = str((baseline.get("models") or {}).get("translation") or "")
 	use_gold_morph = str((baseline.get("models") or {}).get("morphology") or "predicted") == "gold"
+	policy = policy_from_manifest((baseline.get("models") or {}).get("forward_morph_policy") or (baseline.get("selection") or {}).get("forward_morph_policy") or {})
+	policy.validate(morphology_source="gold" if use_gold_morph else "predict", task="morph-translate")
 	translation_model = str(translation_model or baseline_model)
 	if translation_model != baseline_model:
 		raise ValueError("repair check must use the baseline translation model {!r}".format(baseline_model))
@@ -413,7 +423,7 @@ def check_discovery(nrdb, baseline_path, output, translation_model=None,
 	judge = DiscrepancyJudge(nrdb, discrepancy_model, client=tracked_client(openai_client, tracker), progress=progress)
 	result = {
 		"format": CHECK_FORMAT, "selection": baseline["selection"],
-		"models": _models_payload(translation_model, discrepancy_model, use_gold_morph, True),
+		"models": _models_payload(translation_model, discrepancy_model, policy, use_gold_morph, True),
 		"baseline_models": baseline.get("models") or {}, "baseline_artifact": str(baseline_path), "rows": [],
 	}
 	for index, source in enumerate(baseline["rows"], start=1):
@@ -427,6 +437,10 @@ def check_discovery(nrdb, baseline_path, output, translation_model=None,
 					nrdb, source["source"], "japanese", baseline["selection"]["annotation_schema_id"], baseline["selection"]["region"],
 					dialect_ids=[source["dialect_id"]], model_name=translation_model, semantic_feedback="none",
 					use_constructions=True, openai_client=openai_client, progress=progress,
+					morph_review=policy.review, resegmentation=policy.resegmentation,
+					id_model=policy.id_model_path, surface_model=policy.surface_model_path,
+					max_segmentation_candidates=policy.max_segmentation_candidates,
+					morph_policy=policy,
 					fixed_segmented=source["gold_segmented"] if use_gold_morph else None,
 					fixed_annotation=source["gold_annotation"] if use_gold_morph else None,
 					sentence_id=_blind_sentence_id(blind_policy, source),

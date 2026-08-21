@@ -33,7 +33,7 @@ Dataset scope is optional. One option accepts several IDs, and the option may al
 --dataset-id 21 29 --dataset-id 31 28 30
 ```
 
-Selection uses the human gold annotation, but generation never receives the gold translation. The frozen artifact records the sampled sentence identities and complete evaluation inputs.
+Selection uses the human gold annotation, but generation never receives the gold translation. The frozen artifact records the sampled sentence identities, complete evaluation inputs, and exact forward-morphology policy. Optional `--id-model`, `--surface-model`, and `--resegmentation` flags belong on `discrepancy-create`; run and check inherit them unchanged.
 
 `--gold-morph` restricts creation to rows carrying both gold segmentation and gold annotation and records that requirement in the artifact. Use it for the first experiment, where grammatical translation is evaluated independently of automatic morphology.
 
@@ -50,9 +50,9 @@ nrdb-agent discrepancy-run discovery.json \
 	--output baseline.json
 ```
 
-`--translation-model` controls blind translation generation. `--discrepancy-model` independently controls semantic evaluation against gold. Without `--gold-morph`, generation uses the normal nrdb-agent ID-critic configuration: the deployed NRDB morph analysis plus `NRDB_ID_MODEL` when that environment variable is configured. This workflow deliberately provides no separate ID-model override.
+`--translation-model` controls blind translation generation. `--discrepancy-model` independently controls semantic evaluation against gold. Without `--gold-morph`, generation uses the exact morphology policy frozen by `discrepancy-create`. No critic or resegmentation capability is inferred from the worker environment.
 
-With `--gold-morph`, generation skips NRDB morph prediction and the ID critic and translates from the frozen human segmentation and annotation. The option is accepted only for a cohort created with `discrepancy-create --gold-morph`. `discrepancy-check` automatically inherits the baseline morphology mode, so baseline and construction-assisted translations always use the same morphology.
+With `--gold-morph`, generation skips NRDB morph prediction and critics and translates from the frozen human segmentation and annotation. The option is accepted only for a cohort created with `discrepancy-create --gold-morph`. `discrepancy-check` automatically inherits the baseline morphology mode and full policy, so baseline and construction-assisted translations always use the same morphology conditions.
 
 With `--constructions`, baseline generation consults the constructions currently enabled at run time. Its value must match the declaration made by `discrepancy-create`; a mismatch is rejected rather than silently changing experimental conditions. Run the baseline before adding the new candidate records for the target IDs. The baseline artifact records which construction entries were actually applied as translation evidence.
 

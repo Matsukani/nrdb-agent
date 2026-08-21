@@ -7,7 +7,9 @@
 3. **semantic feedback for morphology**: `none`, `generated`, `existing`, or `auto`;
 4. **morphology source**: `predict`, `existing`, or `auto`;
 5. **constructional evidence for Japanese translation**: off by default, enabled with `--constructions`;
-6. **selection/output**: NRDB scope/missingness or local TSV/JSON output.
+6. **morph review**: raw nrdb-morph (`--morph-review none`) or agent review (`--morph-review agent`);
+7. **optional capabilities**: ID critic, surface critic, and resegmentation are independent and disabled unless explicitly passed;
+8. **selection/output**: NRDB scope/missingness or local TSV/JSON output.
 
 The central rule is that **producing a Japanese translation and using Japanese as semantic feedback are different decisions**. A translation may be generated internally to review morphology without becoming an output, and a requested translation may be produced without reopening morphology.
 
@@ -55,7 +57,7 @@ Candidate rows can be researched from CPS and exported for human review with [`n
 
 `--licensed` treats human-licensed `generated_wordforms` rows as grammatical evidence for forward morphology. Retrieval has two ordered paths: exact lookup against the current decoder surface segments, followed by containment lookup against the unsegmented source text for cases where the decoder boundary is wrong. Returned evidence includes its retrieval path and source-text offsets.
 
-When the predicted morphology contains a concrete uncertain span, annotation-v9 may run one bounded batch of up to four alternative segmentations through the current nrdb-morph model with those boundaries fixed. Alternatives must reconstruct the observed source exactly and preserve phrase spaces. This is a diagnostic and candidate-generation path, not free segmentation guessing: the agent must motivate the alternatives from retrieved linguistic evidence, and the complete selected result still passes structural validation. If `--surface-model` (or `NRDB_SURFACE_MODEL`) is configured, its compatibility review is returned for each fixed-segmentation analysis as comparative evidence. The tool is hard-disabled when gold/existing segmentation and annotation are supplied; those boundaries remain authoritative.
+`--resegmentation` explicitly grants annotation-v9 one bounded batch of up to four alternative segmentations through the current nrdb-morph model with those boundaries fixed. Without that flag, segmentation boundaries are frozen and the tool is not exposed to the agent. Alternatives must reconstruct the observed source exactly and preserve phrase spaces. A final boundary change must equal a successfully tested candidate and pass structural validation, otherwise the host restores the morph baseline. `--surface-model PATH` independently adds comparative surface compatibility evidence; it never silently enables resegmentation. Gold/existing boundaries are always authoritative.
 
 An exact, same-dialect licensed form may deterministically replace one `?` decoder segment only when its licensed segmentation and annotation align, no competing licensed analysis exists, and the complete revised analysis passes `nrdb-morph` structural validation. Regional matches, containment matches, ambiguous matches, and already analysed segments are supplied to the agent as structured candidates instead of being silently rewritten. Licensed evidence is also carried into semantic review. `evidence.licensed_form_audit` records the pre-LLM repair decision and which retrieved forms occur in the final analysis.
 
@@ -102,7 +104,7 @@ Produce both finalized morphology and Japanese. `--semantic-feedback none|genera
 
 ### `reverse`
 
-Japanese -> Miyako IDs -> Miyako surface realization. Semantic feedback and `--constructions` are not applicable. `--dialects` / `--target-dialects` supplies ordered target-dialect preference. Existing `NRDB_ID_MODEL` and `NRDB_SURFACE_MODEL` critics remain available.
+Japanese -> Miyako IDs -> Miyako surface realization. Semantic feedback and `--constructions` are not applicable. `--dialects` / `--target-dialects` supplies ordered target-dialect preference. Critics are enabled only by explicit `--id-model PATH` and `--surface-model PATH` options.
 
 ## Registered NRDB jobs
 
@@ -149,6 +151,23 @@ Run normally:
 ```bash
 nrdb-agent run JOB_ID
 ```
+
+Creation freezes the complete forward-morphology policy in the NRDB job: review mode, resegmentation capability, candidate limit, critic paths, and critic file hashes when available. `run` replays that policy and rejects morphology-policy overrides.
+
+Portable `process` output includes the untouched `morph_segmented`/`morph_annotation` baseline, final agent analysis, and serialized policy.
+
+## Orthogonal morph evaluation
+
+`nrdb-agent-morph-eval` exposes the same axes. Freeze selected rows once and reuse them across ablations:
+
+```bash
+nrdb-agent-morph-eval RUN --limit 100 --cohort-out cohort.json --morph-review none --output raw.json
+nrdb-agent-morph-eval RUN --cohort-in cohort.json --morph-review agent --output agent.json
+nrdb-agent-morph-eval RUN --cohort-in cohort.json --morph-review agent --surface-model surface.json --output surface.json
+nrdb-agent-morph-eval RUN --cohort-in cohort.json --morph-review agent --resegmentation --surface-model surface.json --output reseg.json
+```
+
+The cohort has a content fingerprint; checkpoints freeze that fingerprint and the full policy manifest. A mismatched resume is rejected.
 
 Export audited results:
 

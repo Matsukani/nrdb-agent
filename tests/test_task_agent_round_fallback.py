@@ -18,4 +18,4 @@ def test_v9_round_exhaustion_keeps_morph_baseline(monkeypatch):
 	assert result["segmented"] == "foo-bar"
 	assert result["annotation"] == "A-B"
 	assert result["decision"] == "uncertain"
-	assert result["evidence"]["round_exhaustion_fallback"]["kept_baseline"] is True
+	assert result["evidence"]["v9_fallback"]["kept_baseline"] is True

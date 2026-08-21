@@ -148,7 +148,11 @@ def test_run_and_check_keep_translation_and_judge_models_separate(tmp_path, monk
 		FakeNrdb(), cohort_path, baseline_path,
 		translation_model="gpt-5.6-luna", discrepancy_model="gpt-5.6-sol",
 	)
-	assert baseline["models"] == {"translation": "gpt-5.6-luna", "discrepancy": "gpt-5.6-sol", "morphology": "predicted", "id_critic": "nrdb_agent_default", "constructions": "disabled"}
+	assert baseline["models"]["translation"] == "gpt-5.6-luna"
+	assert baseline["models"]["discrepancy"] == "gpt-5.6-sol"
+	assert baseline["models"]["morphology"] == "predicted"
+	assert baseline["models"]["forward_morph_policy"]["resegmentation"] is False
+	assert baseline["models"]["constructions"] == "disabled"
 	assert calls == [("gpt-5.6-luna", False, None, 1)]
 	assert baseline["summary"]["morphemes_to_analyse"][0]["morph_id"] == "adv"
 	assert baseline["summary"]["morphemes_to_analyse"][0]["candidate_patterns"] == [{"pattern": "V-neg-adv", "count": 1}]
@@ -180,7 +184,7 @@ def test_run_uses_gold_morph_and_check_inherits_it(tmp_path, monkeypatch):
 	monkeypatch.setattr(discrepancy, "DiscrepancyJudge", FakeJudge)
 	baseline = discrepancy.run_discovery(FakeNrdb(), cohort_path, baseline_path, use_gold_morph=True)
 	assert baseline["models"]["morphology"] == "gold"
-	assert baseline["models"]["id_critic"] == "not_used"
+	assert baseline["models"]["forward_morph_policy"]["review"] == "agent"
 	assert calls[0]["fixed_segmented"] == "a-b c"
 	assert calls[0]["fixed_annotation"] == "A-adv C"
 	discrepancy.check_discovery(FakeNrdb(), baseline_path, check_path)

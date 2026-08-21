@@ -9,12 +9,24 @@ from .discrepancy import check_discovery, create_discovery, list_discoveries, ru
 from .id_analysis import licensed_candidate_tsv, run_id_analysis_job, write_result_tsv
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
+from .policy import forward_morph_policy
 from .runner import run_job
 from .translate import translate_text
 from .workflow import run_workflow_job
 
 
 SEMANTIC_FEEDBACK_CHOICES = ["none", "generated", "existing", "auto"]
+
+
+def _add_forward_morph_args(parser, stored_job_overrides=False):
+	default_review = None if stored_job_overrides else "agent"
+	default_resegmentation = None if stored_job_overrides else False
+	default_candidates = None if stored_job_overrides else 4
+	parser.add_argument("--morph-review", choices=["none", "agent"], default=default_review, help="Keep the deployed morph baseline or run agent morphology review")
+	parser.add_argument("--resegmentation", action="store_true", default=default_resegmentation, help="Explicitly allow one bounded fixed-segmentation probe batch")
+	parser.add_argument("--max-segmentation-candidates", type=int, default=default_candidates, help="Maximum alternatives in the single segmentation-probe batch")
+	parser.add_argument("--id-model", default=None, help="Explicit nrdb-morph ID-sequence critic path")
+	parser.add_argument("--surface-model", default=None, help="Explicit nrdb-morph surface critic path")
 
 
 def _print_json(value):
@@ -327,6 +339,7 @@ def main():
 	create.add_argument("--limit", type=int, default=100)
 	create.add_argument("--seed", type=int, default=1)
 	create.add_argument("--model", default="gpt-5.6")
+	_add_forward_morph_args(create)
 	create.add_argument("--translation-evidence", choices=["ignore", "use", "required"], default=None, help=argparse.SUPPRESS)
 	create.add_argument("--mode", choices=["blind_gold", "unannotated"], default=None, help=argparse.SUPPRESS)
 	create.add_argument("--prompt-version", choices=["annotation-v1", "annotation-v2", "annotation-v3", "annotation-v4", "annotation-v5", "annotation-v6", "annotation-v7", "annotation-v8", "annotation-v9", "reverse-v1"], default=None, help=argparse.SUPPRESS)
@@ -342,8 +355,7 @@ def main():
 	run.add_argument("job_id", type=int)
 	run.add_argument("--max-items", type=int, default=None)
 	run.add_argument("--target-dialects", type=_parse_dialect_ids, default=None, metavar="ID1,ID2,...")
-	run.add_argument("--id-model", default=None, help="Optional nrdb-morph ID-sequence critic; also reads NRDB_ID_MODEL")
-	run.add_argument("--surface-model", default=None, help="Optional nrdb-morph surface critic; also reads NRDB_SURFACE_MODEL")
+	_add_forward_morph_args(run, stored_job_overrides=True)
 	run.add_argument("--json", action="store_true", help="Suppress terminal progress and print the final job summary as JSON")
 	add_output_mode_args(run)
 
@@ -362,8 +374,7 @@ def main():
 	process.add_argument("--morphology-source", choices=["predict", "existing", "auto"], default="predict")
 	process.add_argument("--needs", choices=["any", "annotation", "translation", "either", "both"], default="any")
 	process.add_argument("--model", default="gpt-5.6")
-	process.add_argument("--id-model", default=None)
-	process.add_argument("--surface-model", default=None)
+	_add_forward_morph_args(process)
 	process.add_argument("--limit", type=int, default=None)
 	process.add_argument("--output", default=None, help="Write .tsv (default by extension) or .json")
 	process.add_argument("--json", action="store_true", help="Suppress terminal progress and print the complete batch result JSON")
@@ -381,7 +392,7 @@ def main():
 	translate.add_argument("--constructions", action="store_true", help="Use curated NRDB constructional evidence before Japanese translation")
 	translate.add_argument("--licensed", action="store_true", help="Use grammar-licensed generated forms as forward morphology evidence")
 	translate.add_argument("--existing-translation", default=None, help="Existing Japanese translation used only when semantic feedback is existing/auto; never exposed to output generation")
-	translate.add_argument("--surface-model", default=None)
+	_add_forward_morph_args(translate)
 	translate.add_argument("--model", default="gpt-5.6")
 	translate.add_argument("--json", action="store_true")
 	add_output_mode_args(translate)
@@ -399,6 +410,7 @@ def main():
 	discrepancy_create.add_argument("--constructions", action="store_true", help="Declare that the baseline will use the currently enabled grammatical constructions")
 	discrepancy_create.add_argument("--blind-policy", choices=["row", "cohort"], default="row", help="row excludes the current sentence; cohort excludes every selected sentence from run and check evidence")
 	discrepancy_create.add_argument("--output", required=True, help="Write the frozen discovery cohort JSON")
+	_add_forward_morph_args(discrepancy_create)
 
 	discrepancy_run = sub.add_parser("discrepancy-run", help="Generate blind translations and judge them against gold")
 	discrepancy_run.add_argument("discovery")
@@ -490,12 +502,23 @@ def main():
 				parser.error("--constructions and --licensed apply only to Miyako -> Japanese/forward morphology workflows")
 			start = end = None
 			if args.sentence_id: start, end = args.sentence_id
+			try:
+				policy = forward_morph_policy(
+					review=args.morph_review, resegmentation=args.resegmentation, id_model=args.id_model,
+					surface_model=args.surface_model, max_segmentation_candidates=args.max_segmentation_candidates,
+					morphology_source=args.morphology_source, task=args.task,
+				)
+			except ValueError as error:
+				parser.error(str(error))
+			if not policy.agent_review and (semantic_feedback != "none" or args.licensed):
+				parser.error("semantic feedback and licensed evidence require --morph-review agent")
 			_print_json(nrdb.create_workflow_job(
 				args.dataset_id, args.task, args.limit, args.model, args.seed,
 				semantic_feedback=semantic_feedback, require_semantic_feedback=require_semantic_feedback,
 				use_constructions=args.constructions, use_licensed_forms=args.licensed,
 				morphology_source=args.morphology_source, needs_filter=args.needs,
 				scope_text_id=args.text_id, scope_sentence_start=start, scope_sentence_end=end,
+				execution_policy=policy.manifest(),
 			))
 	elif args.command == "list":
 		jobs = _select_jobs(nrdb.jobs(), latest=args.latest)
@@ -505,10 +528,10 @@ def main():
 		display = (lambda _message: None) if args.json else WorkflowProgress(output_mode_from_args(args))
 		try:
 			try:
-				value = run_workflow_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, id_model=args.id_model, surface_model=args.surface_model, progress=display)
+				value = run_workflow_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, id_model=args.id_model, surface_model=args.surface_model, morph_review=args.morph_review, resegmentation=args.resegmentation, max_segmentation_candidates=args.max_segmentation_candidates, progress=display)
 			except RuntimeError as error:
 				if "Legacy job" not in str(error): raise
-				value = run_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, surface_model=args.surface_model, id_model=args.id_model, progress=display)
+				value = run_job(nrdb, args.job_id, max_items=args.max_items, target_dialects=args.target_dialects, surface_model=args.surface_model, id_model=args.id_model, morph_review=args.morph_review, resegmentation=args.resegmentation, max_segmentation_candidates=args.max_segmentation_candidates, progress=display)
 		finally:
 			if hasattr(display, "stop"): display.stop()
 		if args.json: _print_json(value)
@@ -528,6 +551,7 @@ def main():
 				use_constructions=args.constructions, use_licensed_forms=args.licensed,
 				morphology_source=args.morphology_source, needs=args.needs,
 				target_dialect_ids=args.dialects, id_model=args.id_model, surface_model=args.surface_model,
+				morph_review=args.morph_review, resegmentation=args.resegmentation, max_segmentation_candidates=args.max_segmentation_candidates,
 				output=args.output, limit=args.limit, progress=display,
 			)
 		finally:
@@ -541,7 +565,8 @@ def main():
 		if args.target == "miyako" and (semantic_feedback != "none" or args.require_semantic_feedback or args.existing_translation or args.constructions or args.licensed):
 			parser.error("semantic feedback, constructions and licensed forms are only applicable to direct Miyako -> Japanese translation")
 		kwargs = dict(
-			dialect_ids=args.dialects, model_name=args.model, surface_model=args.surface_model,
+			dialect_ids=args.dialects, model_name=args.model, id_model=args.id_model, surface_model=args.surface_model,
+			morph_review=args.morph_review, resegmentation=args.resegmentation, max_segmentation_candidates=args.max_segmentation_candidates,
 			semantic_feedback=semantic_feedback, require_semantic_feedback=args.require_semantic_feedback,
 			use_constructions=args.constructions, use_licensed_forms=args.licensed,
 			existing_translation=args.existing_translation,
@@ -560,11 +585,19 @@ def main():
 			if mode in {"silent", "compact"}: print(silent_translation_line(value))
 			else: _print_translation(value)
 	elif args.command == "discrepancy-create":
+		try:
+			policy = forward_morph_policy(
+				review=args.morph_review, resegmentation=args.resegmentation, id_model=args.id_model,
+				surface_model=args.surface_model, max_segmentation_candidates=args.max_segmentation_candidates,
+				morphology_source="gold" if args.gold_morph else "predict", task="morph-translate",
+			)
+		except ValueError as error:
+			parser.error(str(error))
 		value = create_discovery(
 			nrdb, args.ids, args.dataset_ids, args.annotation_schema_id, args.region,
 			limit=args.limit, seed=args.seed, min_morphemes=args.min_morphemes,
 			require_all=args.require_all, require_gold_morph=args.gold_morph,
-			use_constructions=args.constructions, blind_policy=args.blind_policy, output=args.output,
+			use_constructions=args.constructions, blind_policy=args.blind_policy, execution_policy=policy.manifest(), output=args.output,
 		)
 		print("created {} frozen assignment(s), up to {} per ID: {}".format(len(value["rows"]), value["selection"]["limit_per_id"], args.output))
 		print("per ID: {}".format(json.dumps(value["selection"]["sampled_rows_by_id"], ensure_ascii=False)))

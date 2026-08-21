@@ -57,7 +57,7 @@ nrdb-agent translate '日本語の文' \
 	--surface-model ../nrdb-morph/path/to/surface_model.json
 ```
 
-`NRDB_SURFACE_MODEL` may be used instead of `--surface-model`. Reverse translation runs Japanese-to-ID reasoning, dialect-scoped trsc2 surface retrieval, annotation-syntax enforcement, and the optional nrdb-morph allomorph/phonotactic critic. Add `--json` to print the complete audit result instead of the compact demo output.
+Reverse translation runs Japanese-to-ID reasoning, dialect-scoped trsc2 surface retrieval, annotation-syntax enforcement, and an optional explicitly selected nrdb-morph allomorph/phonotactic critic. Critics are never silently loaded from environment variables. Add `--json` to print the complete audit result instead of the compact demo output.
 
 ## First blind experiment
 

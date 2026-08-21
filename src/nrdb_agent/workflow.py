@@ -1,6 +1,5 @@
-import os
-
 from .licensed_agent import LicensedTaskAwareAnnotationAgent
+from .policy import forward_morph_policy, policy_from_manifest
 from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
@@ -85,7 +84,8 @@ def _morph_baseline(morph, source="nrdb-morph"):
 def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt-5.6",
 	semantic_feedback=None, require_semantic_feedback=False, use_constructions=False,
 	use_licensed_forms=False, morphology_source="predict", target_dialect_ids=None,
-	id_model=None, surface_model=None, openai_client=None, progress=print,
+	morph_review="agent", resegmentation=False, max_segmentation_candidates=4,
+	id_model=None, surface_model=None, morph_policy=None, openai_client=None, progress=print,
 	translation_evidence=None):
 	task = str(task or "morph")
 	morphology_source = str(morphology_source or "predict")
@@ -102,12 +102,15 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 	text = str(item.get("text") or "").strip()
 	if task != "reverse" and not text: raise ValueError("item has no Miyako source text")
 
-	id_model = id_model or os.environ.get("NRDB_ID_MODEL")
-	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
 	tracker = UsageTracker()
 	client = tracked_client(openai_client, tracker)
 
 	if task == "reverse":
+		if morph_policy is not None:
+			id_model = morph_policy.id_model_path
+			surface_model = morph_policy.surface_model_path
+		if resegmentation:
+			raise ValueError("--resegmentation applies only to forward morphology")
 		if semantic_feedback != "none" or require_semantic_feedback or use_constructions or use_licensed_forms:
 			raise ValueError("semantic feedback, constructions and licensed forms are not used for reverse tasks")
 		japanese = str(item.get("translation_jp") or item.get("translation") or item.get("japanese") or text or "").strip()
@@ -126,6 +129,15 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 	has_existing = bool(segmented and annotation)
 	use_existing = morphology_source == "existing" or (morphology_source == "auto" and has_existing)
 	if morphology_source == "existing" and not has_existing: raise ValueError("morphology_source=existing requires segmentation and annotation")
+	policy = morph_policy or forward_morph_policy(
+		review=morph_review, resegmentation=resegmentation, id_model=id_model, surface_model=surface_model,
+		max_segmentation_candidates=max_segmentation_candidates,
+		morphology_source="existing" if use_existing else "predict", task=task,
+	)
+	if not policy.agent_review and semantic_feedback != "none":
+		raise ValueError("semantic feedback requires --morph-review agent")
+	if not policy.agent_review and use_licensed_forms:
+		raise ValueError("licensed morphology evidence requires --morph-review agent")
 
 	human_translation = str(item.get("translation_jp") or item.get("translation") or "").strip()
 	if semantic_feedback == "existing" and require_semantic_feedback and not human_translation and not use_existing:
@@ -141,7 +153,7 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		"blind_translation": False,
 	}
 	agent_class = LicensedTaskAwareAnnotationAgent if use_licensed_forms else TaskAwareAnnotationAgent
-	agent = agent_class(nrdb, model_name, client=client, progress=progress, id_model_path=id_model, surface_model_path=surface_model)
+	agent = agent_class(nrdb, model_name, client=client, progress=progress, morph_policy=policy)
 	morph_baseline = None
 
 	if use_existing:
@@ -154,7 +166,12 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		progress("  morph: analyze")
 		morph = nrdb.morph_analyze(text, dialect_id, annotation_schema_id)
 		morph_baseline = _morph_baseline(morph)
-		result = agent.annotate(forward_item, job, morph)
+		if policy.agent_review:
+			result = agent.annotate(forward_item, job, morph)
+		elif task == "morph":
+			result = {"segmented": morph.get("segmented", ""), "annotation": morph.get("annotation", ""), "trsl_ai": "", "decision": "proposed", "confidence": 1.0, "evidence": {"morph_review": {"mode": "none"}}}
+		else:
+			result = agent.translate_frozen(forward_item, job, morph.get("segmented", ""), morph.get("annotation", ""))
 
 	usage = tracker.summary()
 	return {
@@ -165,13 +182,29 @@ def execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt
 		"api_usage": usage, "estimated_cost_usd": _usage_cost(usage), "model": model_name,
 		"semantic_feedback": semantic_feedback, "use_constructions": use_constructions,
 		"use_licensed_forms": use_licensed_forms, "morph_baseline": morph_baseline,
+		"forward_morph_policy": policy.manifest(),
 	}
 
 
 def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialects=None,
-	id_model=None, surface_model=None, openai_client=None):
+	id_model=None, surface_model=None, morph_review=None, resegmentation=None,
+	max_segmentation_candidates=None, openai_client=None):
 	bundle = nrdb.workflow_job_items(job_id)
 	job = bundle["job"]
+	stored_policy = job.get("execution_policy") if isinstance(job.get("execution_policy"), dict) else None
+	if stored_policy is None and isinstance(job.get("execution_policy_json"), str) and job.get("execution_policy_json"):
+		import json
+		stored_policy = json.loads(job["execution_policy_json"])
+	if stored_policy:
+		policy = policy_from_manifest(stored_policy).validate(morphology_source=job.get("morphology_source") or "predict", task=job.get("task") or "morph")
+		if any(value is not None for value in (id_model, surface_model, morph_review, resegmentation, max_segmentation_candidates)):
+			raise ValueError("registered job already owns its forward morphology policy; run-time overrides are not allowed")
+	else:
+		policy = forward_morph_policy(
+			review=morph_review or "agent", resegmentation=bool(resegmentation), id_model=id_model, surface_model=surface_model,
+			max_segmentation_candidates=max_segmentation_candidates or 4,
+			morphology_source=job.get("morphology_source") or "predict", task=job.get("task") or "morph",
+		)
 	items = list(bundle.get("items", []))
 	_job_scope(progress, bundle)
 	if max_items is not None: items = items[:max(0, int(max_items))]
@@ -193,7 +226,7 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 				use_constructions=bool(job.get("use_constructions")),
 				use_licensed_forms=bool(job.get("use_licensed_forms")),
 				translation_evidence=job.get("translation_evidence"), morphology_source=job.get("morphology_source") or "predict",
-				target_dialect_ids=target_dialects, id_model=id_model, surface_model=surface_model,
+				target_dialect_ids=target_dialects, morph_policy=policy,
 				openai_client=openai_client, progress=progress,
 			)
 			cost += float(result.get("estimated_cost_usd") or 0.0)
@@ -201,6 +234,7 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 			evidence = dict(result.get("evidence") or {})
 			evidence["api_usage"] = result.get("api_usage", {})
 			if result.get("morph_baseline"): evidence["morph_baseline"] = result["morph_baseline"]
+			if result.get("forward_morph_policy"): evidence["forward_morph_policy_manifest"] = result["forward_morph_policy"]
 			nrdb.save_result(job_id=job_id, sentence_id=item["sentence_id"], segmented=result.get("segmented", ""), annotation=result.get("annotation", ""), trsl_ai=result.get("translation", "") if job.get("produce_translation") else "", decision=result.get("decision") or "proposed", confidence=result.get("confidence"), evidence=evidence, model_response_id=None)
 			completed += 1
 			_item_result(progress, index, len(items), job["task"], result, label)
@@ -208,7 +242,7 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 		_job_summary(progress, completed, len(items), cost, failed, pricing_complete)
 		summary = nrdb.summary(job_id)
 		if isinstance(summary, dict):
-			summary["workflow"] = {"task": job["task"], "semantic_feedback": job.get("semantic_feedback"), "require_semantic_feedback": bool(job.get("require_semantic_feedback")), "use_constructions": bool(job.get("use_constructions")), "use_licensed_forms": bool(job.get("use_licensed_forms")), "completed": completed, "failed": failed, "estimated_cost_usd": cost, "pricing_complete": pricing_complete, "scope": bundle.get("scope", {})}
+			summary["workflow"] = {"task": job["task"], "semantic_feedback": job.get("semantic_feedback"), "require_semantic_feedback": bool(job.get("require_semantic_feedback")), "use_constructions": bool(job.get("use_constructions")), "use_licensed_forms": bool(job.get("use_licensed_forms")), "forward_morph_policy": policy.manifest(), "completed": completed, "failed": failed, "estimated_cost_usd": cost, "pricing_complete": pricing_complete, "scope": bundle.get("scope", {})}
 		return summary
 	except BaseException as error:
 		nrdb.set_job_status(job_id, "failed", str(error))

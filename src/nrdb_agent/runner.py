@@ -1,6 +1,4 @@
 import json
-import os
-
 from .annotator import AnnotationAgent
 from .annotator_v7 import AnnotationAgentV7
 from .annotator_v8 import AnnotationAgentV8
@@ -10,6 +8,7 @@ from .reverse_id_critic import IdCriticSyntaxAwareReverseSurfaceAgent
 from .reverse_surface_syntax_agent import SyntaxAwareReverseSurfaceAgent
 from .reverse_surface_critic_agent import SurfaceCriticReverseAgent
 from .usage import UsageTracker, tracked_client
+from .policy import forward_morph_policy
 
 
 AGENT_JSON_ATTEMPTS = 3
@@ -34,11 +33,15 @@ def _trace_usage(progress, usage, prefix="API usage"):
 	))
 
 
-def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, target_dialects=None, surface_model=None, id_model=None):
-	surface_model = surface_model or os.environ.get("NRDB_SURFACE_MODEL")
-	id_model = id_model or os.environ.get("NRDB_ID_MODEL")
+def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, target_dialects=None,
+	surface_model=None, id_model=None, morph_review=None, resegmentation=None, max_segmentation_candidates=None):
 	bundle = nrdb.job_items(job_id)
 	job = bundle["job"]
+	policy = forward_morph_policy(
+		review=morph_review or "agent", resegmentation=bool(resegmentation), id_model=id_model, surface_model=surface_model,
+		max_segmentation_candidates=max_segmentation_candidates or 4, morphology_source="predict",
+		task="reverse" if job.get("prompt_version") == "reverse-v1" else "morph",
+	)
 	items = bundle["items"]
 	nrdb.exclude_job_id = int(job_id)
 	if target_dialects:
@@ -72,8 +75,7 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 	elif agent_class is IdCriticSyntaxAwareReverseSurfaceAgent:
 		agent_kwargs["id_model_path"] = id_model
 	elif agent_class is AnnotationAgentV9:
-		agent_kwargs["id_model_path"] = id_model
-		agent_kwargs["surface_model_path"] = surface_model
+		agent_kwargs["morph_policy"] = policy
 	agent = agent_class(nrdb, job["model_name"], **agent_kwargs)
 	nrdb.set_job_status(job_id, "running")
 	completed = 0
@@ -104,20 +106,24 @@ def run_job(nrdb, job_id, max_items=None, openai_client=None, progress=print, ta
 						progress("  forward IDs: nrdb-morph critic={}".format(id_model))
 					if prompt_version == "annotation-v9" and surface_model:
 						progress("  forward segmentation surface critic={}".format(surface_model))
-				for attempt in range(1, AGENT_JSON_ATTEMPTS + 1):
-					try:
-						result = agent.annotate(item, job, morph)
-						break
-					except json.JSONDecodeError as error:
-						if attempt >= AGENT_JSON_ATTEMPTS:
-							raise
-						progress("  llm: malformed/truncated JSON (attempt {}/{}): {}; retrying sentence".format(attempt, AGENT_JSON_ATTEMPTS, error))
+				if prompt_version != "reverse-v1" and not policy.agent_review:
+					result = {"segmented": morph.get("segmented", ""), "annotation": morph.get("annotation", ""), "trsl_ai": "", "decision": "proposed", "confidence": 1.0, "evidence": {"morph_review": {"mode": "none"}}}
+				else:
+					for attempt in range(1, AGENT_JSON_ATTEMPTS + 1):
+						try:
+							result = agent.annotate(item, job, morph)
+							break
+						except json.JSONDecodeError as error:
+							if attempt >= AGENT_JSON_ATTEMPTS:
+								raise
+							progress("  llm: malformed/truncated JSON (attempt {}/{}): {}; retrying sentence".format(attempt, AGENT_JSON_ATTEMPTS, error))
 			except Exception as error:
 				progress("  infrastructure failure: {}".format(error))
 				raise
 
 			sentence_usage = usage_tracker.summary(since=usage_start)
 			result.setdefault("evidence", {})["api_usage"] = sentence_usage
+			result["evidence"]["forward_morph_policy_manifest"] = policy.manifest()
 			_trace_usage(progress, sentence_usage)
 			progress("  save: AI result")
 			nrdb.save_result(

@@ -187,7 +187,7 @@ class TranslationProgress:
 		stripped = text.strip()
 		for prefix, label in MILESTONE_RULES:
 			if stripped.startswith(prefix):
-				return prefix, label
+				return label, label
 		return None
 
 	def __call__(self, message):

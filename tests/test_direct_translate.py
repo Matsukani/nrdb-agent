@@ -45,8 +45,9 @@ class FakeNrdb:
 
 
 class FakeForwardAgent:
-	def __init__(self, nrdb, model_name, client=None, progress=print, id_model_path=None):
+	def __init__(self, nrdb, model_name, client=None, progress=print, id_model_path=None, morph_policy=None):
 		self.nrdb = nrdb
+		self.morph_policy = morph_policy
 
 	def annotate(self, item, job, morph):
 		assert item["sentence_id"] == 0
@@ -74,9 +75,9 @@ class LicensedForwardAgent(FakeForwardAgent):
 
 
 class FrozenForwardAgent(FakeForwardAgent):
-	def __init__(self, nrdb, model_name, client=None, progress=print, id_model_path=None):
-		assert id_model_path is None
+	def __init__(self, nrdb, model_name, client=None, progress=print, id_model_path=None, morph_policy=None):
 		self.nrdb = nrdb
+		self.morph_policy = morph_policy
 
 	def translate_frozen(self, item, job, segmented, annotation):
 		assert job["morphology_source"] == "existing"
@@ -155,7 +156,7 @@ def test_direct_miyako_to_japanese_can_translate_frozen_gold_morphology(monkeypa
 	nrdb = FakeNrdb()
 	result = translate_module.translate_text(
 		nrdb, "mija", "japanese", 2, "宮古", fixed_segmented="gold-seg", fixed_annotation="gold-ann",
-		id_model="/tmp/id-model.json", progress=lambda _: None,
+		progress=lambda _: None,
 	)
 	assert nrdb.morph_calls == []
 	assert result["morphology_source"] == "gold"
