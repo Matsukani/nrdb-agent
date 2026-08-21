@@ -115,7 +115,8 @@ class NrdbClient:
 
 	def create_id_analysis_job(self, annotation_schema_id, target_ids, model_name, region=None,
 		dialect_id=None, research_notes=None, source_kinds=None, dataset_ids=None,
-		minimum_ngram_count=2, example_limit=30):
+		provider_dataset_ids=None, minimum_ngram_count=2, example_limit=30,
+		probe_limit=24, probe_seed=1):
 		return self._id_analysis_post("create_job", {
 			"annotation_schema_id": int(annotation_schema_id),
 			"target_ids": list(target_ids),
@@ -125,8 +126,11 @@ class NrdbClient:
 			"research_notes": dict(research_notes or {}),
 			"source_kinds": list(source_kinds or ["txt", "sen", "lxs"]),
 			"dataset_ids": [int(value) for value in (dataset_ids or [])],
+			"provider_dataset_ids": [int(value) for value in (provider_dataset_ids or [])],
 			"minimum_ngram_count": int(minimum_ngram_count),
 			"example_limit": int(example_limit),
+			"probe_limit": int(probe_limit),
+			"probe_seed": int(probe_seed),
 		})
 
 	def id_analysis_jobs(self):

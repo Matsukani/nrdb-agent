@@ -1,11 +1,12 @@
 import argparse
 import json
+from pathlib import Path
 
 from .asr_review import review_asr_predictions
 from .batch import export_job_results_tsv, process_dataset
 from .cli_output import TranslationProgress, WorkflowProgress, add_output_mode_args, output_mode_from_args, silent_translation_line
 from .discrepancy import check_discovery, create_discovery, list_discoveries, run_discovery
-from .id_analysis import run_id_analysis_job, write_result_tsv
+from .id_analysis import licensed_candidate_tsv, run_id_analysis_job, write_result_tsv
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
 from .runner import run_job
@@ -451,18 +452,23 @@ def main():
 	id_create.add_argument("--dialect", dest="dialect_id", type=int, default=None)
 	id_create.add_argument("--source", dest="source_kinds", action="append", choices=["txt", "sen", "lxs"], default=None, help="Restrict evidence sources; repeat as needed")
 	id_create.add_argument("--dataset-id", dest="dataset_ids", action="append", type=int, default=None, help="Restrict evidence to a dataset; repeat as needed")
+	id_create.add_argument("--provider-dataset-id", dest="provider_dataset_ids", action="extend", nargs="+", type=int, default=None, help="Lexicon dataset(s) supplying POS-tagged hosts for productive morphology probes; repeat as needed")
 	id_create.add_argument("--instructions", default=None, help="Expert guidance applying to every requested ID")
 	id_create.add_argument("--note", action="append", default=None, metavar="ID=TEXT", help="Expert guidance for one requested ID; repeat as needed")
 	id_create.add_argument("--minimum-ngram-count", type=int, default=2)
 	id_create.add_argument("--example-limit", type=int, default=30)
+	id_create.add_argument("--probe-limit", type=int, default=24, help="Maximum attested and productive morphology probes per target ID")
+	id_create.add_argument("--probe-seed", type=int, default=1, help="Deterministic provider-lexeme sampling seed")
 	id_create.add_argument("--model", default="gpt-5.6")
 	id_run = id_sub.add_parser("run", help="Run one queued ID-analysis job")
 	id_run.add_argument("job_id", type=int)
 	id_run.add_argument("--output", default=None, help="Write candidate records to a TSV file")
+	id_run.add_argument("--licensed-output", default=None, help="Write review-only generated_wordforms candidates to a second TSV")
 	id_run.add_argument("--json", action="store_true", help="Print the complete audited JSON result")
 	id_show = id_sub.add_parser("show", help="Show one stored ID-analysis job/result")
 	id_show.add_argument("job_id", type=int)
 	id_show.add_argument("--output", default=None, help="Write the stored candidate TSV to a file")
+	id_show.add_argument("--licensed-output", default=None, help="Reconstruct review-only generated_wordforms candidates from the stored result")
 	id_show.add_argument("--json", action="store_true")
 	id_list = id_sub.add_parser("list", help="List recent ID-analysis jobs")
 	id_list.add_argument("--json", action="store_true")
@@ -599,19 +605,30 @@ def main():
 			_print_json(nrdb.create_id_analysis_job(
 				args.annotation_schema_id, target_ids, args.model, region=args.region,
 				dialect_id=args.dialect_id, research_notes=notes, source_kinds=args.source_kinds,
-				dataset_ids=args.dataset_ids, minimum_ngram_count=args.minimum_ngram_count,
-				example_limit=args.example_limit,
+				dataset_ids=args.dataset_ids, provider_dataset_ids=args.provider_dataset_ids,
+				minimum_ngram_count=args.minimum_ngram_count, example_limit=args.example_limit,
+				probe_limit=args.probe_limit, probe_seed=args.probe_seed,
 			))
 		elif args.id_analysis_command == "run":
 			progress = (lambda _message: None) if args.json else print
 			bundle = run_id_analysis_job(nrdb, args.job_id, progress=progress)
 			if args.output:
 				write_result_tsv(args.output, bundle["tsv"])
+			licensed_output = args.licensed_output
+			if not licensed_output and args.output and bundle["result"]["job"].get("provider_dataset_ids"):
+				output_path = Path(args.output)
+				licensed_output = str(output_path.with_name(output_path.stem + "-licensed" + output_path.suffix))
+			if licensed_output:
+				write_result_tsv(licensed_output, bundle["licensed_tsv"])
 			if args.json:
 				_print_json(bundle["result"])
-			elif args.output:
+			elif args.output or licensed_output:
 				candidate_count = sum(len(value.get("candidates", [])) for value in bundle["result"].get("analyses", []))
-				print("wrote {} candidate row(s) to {}".format(candidate_count, args.output))
+				licensed_count = sum(len(value.get("licensed_wordform_candidates", [])) for value in bundle["result"].get("analyses", []))
+				if args.output:
+					print("wrote {} grammar candidate row(s) to {}".format(candidate_count, args.output))
+				if licensed_output:
+					print("wrote {} licensed-wordform candidate row(s) to {}".format(licensed_count, licensed_output))
 			else:
 				print(bundle["tsv"], end="")
 		elif args.id_analysis_command == "show":
@@ -620,10 +637,14 @@ def main():
 			if args.output:
 				if not tsv: parser.error("ID-analysis job has no stored TSV result")
 				write_result_tsv(args.output, tsv)
+			if args.licensed_output:
+				if not isinstance(job.get("result"), dict): parser.error("ID-analysis job has no stored JSON result")
+				write_result_tsv(args.licensed_output, licensed_candidate_tsv(job["result"]))
 			if args.json:
 				_print_json(job)
-			elif args.output:
-				print("wrote stored candidate TSV to {}".format(args.output))
+			elif args.output or args.licensed_output:
+				if args.output: print("wrote stored grammar candidate TSV to {}".format(args.output))
+				if args.licensed_output: print("wrote stored licensed-wordform candidates to {}".format(args.licensed_output))
 			elif tsv:
 				print(tsv, end="")
 			else:
