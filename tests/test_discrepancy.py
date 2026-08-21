@@ -71,6 +71,7 @@ def test_create_discovery_filters_gold_translations_ids_and_morpheme_count(tmp_p
 	assert [row["sentence_id"] for row in result["rows"]] == [1]
 	assert result["rows"][0]["matched_target_ids"] == ["adv"]
 	assert result["selection"]["limit_per_id"] == 10
+	assert result["selection"]["baseline_use_constructions"] is False
 	assert json.loads(output.read_text(encoding="utf-8"))["format"] == discrepancy.DISCOVERY_FORMAT
 
 
@@ -120,7 +121,7 @@ def test_run_and_check_keep_translation_and_judge_models_separate(tmp_path, monk
 		FakeNrdb(), cohort_path, baseline_path,
 		translation_model="gpt-5.6-luna", discrepancy_model="gpt-5.6-sol",
 	)
-	assert baseline["models"] == {"translation": "gpt-5.6-luna", "discrepancy": "gpt-5.6-sol", "morphology": "predicted", "id_critic": "nrdb_agent_default"}
+	assert baseline["models"] == {"translation": "gpt-5.6-luna", "discrepancy": "gpt-5.6-sol", "morphology": "predicted", "id_critic": "nrdb_agent_default", "constructions": "disabled"}
 	assert calls == [("gpt-5.6-luna", False, None)]
 	assert baseline["summary"]["morphemes_to_analyse"][0]["morph_id"] == "adv"
 	assert baseline["summary"]["morphemes_to_analyse"][0]["candidate_patterns"] == [{"pattern": "V-neg-adv", "count": 1}]
@@ -131,6 +132,8 @@ def test_run_and_check_keep_translation_and_judge_models_separate(tmp_path, monk
 	)
 	assert checked["models"]["translation"] == "gpt-5.6-luna"
 	assert checked["models"]["discrepancy"] == "gpt-5.6-terra"
+	assert checked["models"]["constructions"] == "enabled_current"
+	assert checked["baseline_models"]["constructions"] == "disabled"
 	assert calls[-1] == ("gpt-5.6-luna", True, None)
 	assert checked["summary"]["counts"]["repaired"] == 1
 
@@ -166,6 +169,40 @@ def test_run_rejects_gold_morph_for_unrestricted_cohort(tmp_path):
 		discrepancy.run_discovery(FakeNrdb(), cohort_path, tmp_path / "baseline.json", use_gold_morph=True)
 
 
+def test_run_uses_declared_current_constructions(tmp_path, monkeypatch):
+	cohort_path = tmp_path / "cohort.json"
+	discrepancy.create_discovery(
+		FakeNrdb(), ["adv"], [30], 2, "宮古", limit=1,
+		use_constructions=True, output=cohort_path,
+	)
+	calls = []
+
+	def fake_translate(nrdb, text, target, schema, region, **kwargs):
+		calls.append(kwargs)
+		return {"annotation": "A-adv C", "translation": "生成訳", "api_usage": {}}
+
+	monkeypatch.setattr(discrepancy, "translate_text", fake_translate)
+	monkeypatch.setattr(discrepancy, "DiscrepancyJudge", FakeJudge)
+	baseline = discrepancy.run_discovery(
+		FakeNrdb(), cohort_path, tmp_path / "baseline.json", use_constructions=True,
+	)
+	assert calls[0]["use_constructions"] is True
+	assert baseline["models"]["constructions"] == "enabled_current"
+
+
+@pytest.mark.parametrize("created_with,run_with", [(True, False), (False, True)])
+def test_run_rejects_construction_condition_mismatch(tmp_path, created_with, run_with):
+	cohort_path = tmp_path / "cohort.json"
+	discrepancy.create_discovery(
+		FakeNrdb(), ["adv"], [30], 2, "宮古", limit=1,
+		use_constructions=created_with, output=cohort_path,
+	)
+	with pytest.raises(ValueError, match="options must match"):
+		discrepancy.run_discovery(
+			FakeNrdb(), cohort_path, tmp_path / "baseline.json", use_constructions=run_with,
+		)
+
+
 def test_check_rejects_translation_model_change(tmp_path):
 	path = tmp_path / "baseline.json"
 	path.write_text(json.dumps({
@@ -194,6 +231,7 @@ def test_list_discoveries_summarizes_recognized_local_artifacts(tmp_path):
 	assert baseline_row["status"] == "completed"
 	assert baseline_row["translation_model"] == "gpt-5.6-luna"
 	assert baseline_row["morphology"] == "predicted"
+	assert baseline_row["constructions"] == "disabled"
 	assert baseline_row["counts"] == {"equivalent": 1}
 	assert len(discrepancy.list_discoveries(tmp_path, latest=1)) == 1
 

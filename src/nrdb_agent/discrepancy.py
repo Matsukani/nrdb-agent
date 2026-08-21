@@ -30,9 +30,9 @@ Return only the requested JSON. Do not produce chain-of-thought.
 """
 
 
-REPAIR_INSTRUCTIONS = """You are the NRDB construction-assisted Japanese translation repair critic.
+REPAIR_INSTRUCTIONS = """You are the NRDB Japanese translation repair critic.
 
-Compare a blind baseline translation and a construction-assisted translation against the same human gold translation. Similar but differently worded translations are acceptable. Decide whether construction evidence meaningfully repaired the target grammatical phenomenon, left it unchanged, or caused a regression. Judge the target phenomenon separately from unrelated lexical or context-dependent differences. Do not reward mere wording similarity.
+Compare an earlier blind baseline translation and a translation produced against the currently enabled construction knowledge with the same human gold translation. The baseline may already have used constructions that were enabled at baseline time. Similar but differently worded translations are acceptable. Decide whether the current grammatical evidence meaningfully repaired the target phenomenon, left it unchanged, or caused a regression. Judge the target phenomenon separately from unrelated lexical or context-dependent differences. Do not reward mere wording similarity.
 
 Return only the requested JSON. Do not produce chain-of-thought.
 """
@@ -127,6 +127,7 @@ def list_discoveries(directory=".", recursive=False, latest=None):
 			"translation_model": models.get("translation"),
 			"discrepancy_model": models.get("discrepancy"),
 			"morphology": models.get("morphology") or ("gold_required" if selection.get("require_gold_morph") else "predicted"),
+			"constructions": models.get("constructions") or ("enabled_declared" if selection.get("baseline_use_constructions") else "disabled"),
 			"counts": dict(summary.get("counts") or {}), "failed_rows": failed,
 			"estimated_cost_usd": summary.get("estimated_cost_usd"), "pricing_complete": summary.get("pricing_complete"),
 		})
@@ -148,7 +149,8 @@ def _row_targets(row, target_ids):
 
 
 def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region, limit=100,
-	seed=1, min_morphemes=1, require_all=False, require_gold_morph=False, output=None):
+	seed=1, min_morphemes=1, require_all=False, require_gold_morph=False,
+	use_constructions=False, output=None):
 	target_ids = list(dict.fromkeys(str(value).strip() for value in target_ids if str(value).strip()))
 	if not target_ids:
 		raise ValueError("at least one target morpheme ID is required")
@@ -200,7 +202,7 @@ def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region
 			"target_ids": target_ids, "dataset_ids": dataset_ids,
 			"annotation_schema_id": int(annotation_schema_id), "region": str(region),
 			"limit_per_id": int(limit), "limit": int(limit), "seed": int(seed), "min_morphemes": int(min_morphemes),
-			"require_gold_morph": bool(require_gold_morph),
+			"require_gold_morph": bool(require_gold_morph), "baseline_use_constructions": bool(use_constructions),
 			"match": "all" if require_all else "independent_per_id",
 			"eligible_pool_size_by_id": pool_sizes, "sampled_rows_by_id": sampled_by_id,
 			"eligible_assignments": sum(pool_sizes.values()), "sampled_assignments": len(selected),
@@ -242,11 +244,12 @@ class DiscrepancyJudge(AnnotationAgent):
 		}, REPAIR_INSTRUCTIONS, REPAIR_FORMAT)
 
 
-def _models_payload(translation_model, discrepancy_model, gold_morph=False):
+def _models_payload(translation_model, discrepancy_model, gold_morph=False, use_constructions=False):
 	return {
 		"translation": str(translation_model), "discrepancy": str(discrepancy_model),
 		"morphology": "gold" if gold_morph else "predicted",
 		"id_critic": "not_used" if gold_morph else "nrdb_agent_default",
+		"constructions": "enabled_current" if use_constructions else "disabled",
 	}
 
 
@@ -327,15 +330,20 @@ def _with_costs(summary, rows, result_key, discrepancy_usage):
 
 
 def run_discovery(nrdb, discovery_path, output, translation_model="gpt-5.6-luna",
-	discrepancy_model="gpt-5.6-terra", use_gold_morph=False, openai_client=None, progress=print):
+	discrepancy_model="gpt-5.6-terra", use_gold_morph=False, use_constructions=False,
+	openai_client=None, progress=print):
 	discovery = _read(discovery_path, DISCOVERY_FORMAT)
 	if use_gold_morph and not discovery.get("selection", {}).get("require_gold_morph"):
 		raise ValueError("--gold-morph requires a cohort created with discrepancy-create --gold-morph")
+	cohort_constructions = bool(discovery.get("selection", {}).get("baseline_use_constructions"))
+	if bool(use_constructions) != cohort_constructions:
+		required = "with" if cohort_constructions else "without"
+		raise ValueError("cohort was created {} baseline constructions; discrepancy-run options must match".format(required))
 	tracker = UsageTracker()
 	judge = DiscrepancyJudge(nrdb, discrepancy_model, client=tracked_client(openai_client, tracker), progress=progress)
 	result = {
 		"format": BASELINE_FORMAT, "selection": discovery["selection"],
-		"models": _models_payload(translation_model, discrepancy_model, use_gold_morph), "rows": [],
+		"models": _models_payload(translation_model, discrepancy_model, use_gold_morph, use_constructions), "rows": [],
 	}
 	for index, source in enumerate(discovery["rows"], start=1):
 		progress("[{}/{}] baseline sentence {}".format(index, len(discovery["rows"]), source["sentence_id"]))
@@ -344,7 +352,7 @@ def run_discovery(nrdb, discovery_path, output, translation_model="gpt-5.6-luna"
 			generated = translate_text(
 				nrdb, source["source"], "japanese", discovery["selection"]["annotation_schema_id"], discovery["selection"]["region"],
 				dialect_ids=[source["dialect_id"]], model_name=translation_model, semantic_feedback="none",
-				use_constructions=False, openai_client=openai_client, progress=progress,
+				use_constructions=use_constructions, openai_client=openai_client, progress=progress,
 				fixed_segmented=source["gold_segmented"] if use_gold_morph else None,
 				fixed_annotation=source["gold_annotation"] if use_gold_morph else None,
 			)
@@ -375,7 +383,8 @@ def check_discovery(nrdb, baseline_path, output, translation_model=None,
 	judge = DiscrepancyJudge(nrdb, discrepancy_model, client=tracked_client(openai_client, tracker), progress=progress)
 	result = {
 		"format": CHECK_FORMAT, "selection": baseline["selection"],
-		"models": _models_payload(translation_model, discrepancy_model, use_gold_morph), "baseline_artifact": str(baseline_path), "rows": [],
+		"models": _models_payload(translation_model, discrepancy_model, use_gold_morph, True),
+		"baseline_models": baseline.get("models") or {}, "baseline_artifact": str(baseline_path), "rows": [],
 	}
 	for index, source in enumerate(baseline["rows"], start=1):
 		progress("[{}/{}] construction check sentence {}".format(index, len(baseline["rows"]), source["sentence_id"]))

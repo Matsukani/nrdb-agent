@@ -47,14 +47,14 @@ def _print_discrepancy_list(rows):
 		models = ""
 		if row.get("translation_model") or row.get("discrepancy_model"):
 			models = " | models={}/{}".format(row.get("translation_model") or "-", row.get("discrepancy_model") or "-")
-		morphology = " | morph={}".format(row.get("morphology") or "-")
+		conditions = " | morph={} constructions={}".format(row.get("morphology") or "-", row.get("constructions") or "-")
 		cost = ""
 		if row.get("pricing_complete"):
 			cost = " | ${:.4f}".format(float(row.get("estimated_cost_usd") or 0.0))
 		print("{} | {} | {} | rows={} | schema={} region={} | ids={}{}{} | {}".format(
 			row.get("modified_at", "")[:19], row.get("stage"), row.get("status"), row.get("rows", 0),
 			row.get("annotation_schema_id") or "-", row.get("region") or "-", ",".join(row.get("target_ids") or []),
-			models + morphology, cost, row.get("path"),
+			models + conditions, cost, row.get("path"),
 		))
 
 
@@ -388,6 +388,7 @@ def main():
 	discrepancy_create.add_argument("--min-morphemes", type=_positive_count, default=1)
 	discrepancy_create.add_argument("--require-all", action="store_true", help="Require every requested ID; default matches any requested ID")
 	discrepancy_create.add_argument("--gold-morph", action="store_true", help="Keep only rows with gold segmentation and annotation, for frozen-morphology translation")
+	discrepancy_create.add_argument("--constructions", action="store_true", help="Declare that the baseline will use the currently enabled grammatical constructions")
 	discrepancy_create.add_argument("--output", required=True, help="Write the frozen discovery cohort JSON")
 
 	discrepancy_run = sub.add_parser("discrepancy-run", help="Generate blind translations and judge them against gold")
@@ -395,6 +396,7 @@ def main():
 	discrepancy_run.add_argument("--translation-model", default="gpt-5.6-luna", help="Model that generates blind translations")
 	discrepancy_run.add_argument("--discrepancy-model", default="gpt-5.6-terra", help="Model that judges semantic discrepancies")
 	discrepancy_run.add_argument("--gold-morph", action="store_true", help="Translate from the frozen gold segmentation and annotation instead of predicted morphology")
+	discrepancy_run.add_argument("--constructions", action="store_true", help="Use currently enabled grammatical constructions; must match cohort creation")
 	discrepancy_run.add_argument("--output", required=True, help="Write baseline translations and judgments JSON")
 
 	discrepancy_check = sub.add_parser("discrepancy-check", help="Rerun the frozen baseline cohort with grammatical constructions")
@@ -547,7 +549,8 @@ def main():
 		value = create_discovery(
 			nrdb, args.ids, args.dataset_ids, args.annotation_schema_id, args.region,
 			limit=args.limit, seed=args.seed, min_morphemes=args.min_morphemes,
-			require_all=args.require_all, require_gold_morph=args.gold_morph, output=args.output,
+			require_all=args.require_all, require_gold_morph=args.gold_morph,
+			use_constructions=args.constructions, output=args.output,
 		)
 		print("created {} frozen assignment(s), up to {} per ID: {}".format(len(value["rows"]), value["selection"]["limit_per_id"], args.output))
 		print("per ID: {}".format(json.dumps(value["selection"]["sampled_rows_by_id"], ensure_ascii=False)))
@@ -555,6 +558,7 @@ def main():
 		value = run_discovery(
 			nrdb, args.discovery, args.output, translation_model=args.translation_model,
 			discrepancy_model=args.discrepancy_model, use_gold_morph=args.gold_morph,
+			use_constructions=args.constructions,
 		)
 		_print_discrepancy_summary("baseline complete", value, args.output)
 	elif args.command == "discrepancy-check":

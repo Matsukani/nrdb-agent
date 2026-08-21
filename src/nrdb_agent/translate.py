@@ -67,6 +67,21 @@ def _annotate_with_json_retry(agent, item, job, morph, progress):
 	raise RuntimeError("direct translation JSON retry failed")
 
 
+def _translate_frozen_with_json_retry(agent, item, job, segmented, annotation, progress):
+	last_error = None
+	for attempt in range(1, DIRECT_JSON_ATTEMPTS + 1):
+		try:
+			return agent.translate_frozen(item, job, segmented, annotation)
+		except json.JSONDecodeError as error:
+			last_error = error
+			if attempt >= DIRECT_JSON_ATTEMPTS:
+				raise
+			progress("  llm: malformed/truncated frozen-translation JSON (attempt {}/{}): {}; retrying translation".format(attempt, DIRECT_JSON_ATTEMPTS, error))
+	if last_error:
+		raise last_error
+	raise RuntimeError("frozen translation JSON retry failed")
+
+
 def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None,
 	model_name="gpt-5.6", surface_model=None, id_model=None, semantic_feedback="generated",
 	require_semantic_feedback=False, use_constructions=False, use_licensed_forms=False,
@@ -138,7 +153,7 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 		agent_class = LicensedTaskAwareAnnotationAgent if use_licensed_forms else TaskAwareAnnotationAgent
 		agent = agent_class(nrdb, model_name, client=client, progress=progress, id_model_path=None if use_fixed_morphology else id_model)
 		if use_fixed_morphology:
-			result = agent.translate_frozen(item, job, fixed_segmented, fixed_annotation)
+			result = _translate_frozen_with_json_retry(agent, item, job, fixed_segmented, fixed_annotation, progress)
 		else:
 			result = _annotate_with_json_retry(agent, item, job, morph, progress)
 		if licensed is not None:
