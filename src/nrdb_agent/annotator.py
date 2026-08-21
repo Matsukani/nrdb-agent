@@ -304,7 +304,7 @@ class AnnotationAgent:
 			region = str(item.get("dialect_region") or "").strip()
 			if not region:
 				return {"success": True, "surface": arguments["surface"], "candidate_id": arguments["candidate_id"], "region": None, "combined": {"surface_total": 0, "candidate_count": 0, "candidate_rate": None, "penalty": "none"}, "corpus": {}, "lexicon": {}, "note": "No dialect region available; no penalty applied."}
-			return self.nrdb.form_id_support(arguments["surface"], arguments["candidate_id"], region, schema_id)
+			return self.nrdb.form_id_support(arguments["surface"], arguments["candidate_id"], region, schema_id, exclude_sentence_id=item.get("sentence_id", 0))
 		if name == "validate_analysis":
 			return self.nrdb.validate_analysis(item["text"], arguments["segmented"], arguments["annotation"])
 		raise ValueError("unknown tool: {}".format(name))

@@ -27,8 +27,8 @@ class FakeNrdb:
 		self.form_calls = []
 		self.lookup_calls = []
 
-	def form_id_support(self, surface, candidate, region, schema_id):
-		self.form_calls.append((surface, candidate, region, schema_id))
+	def form_id_support(self, surface, candidate, region, schema_id, exclude_sentence_id=0):
+		self.form_calls.append((surface, candidate, region, schema_id, exclude_sentence_id))
 		return {
 			"surface": surface, "candidate_id": candidate, "region": region,
 			"combined": {"surface_total": 10, "candidate_count": 8, "candidate_rate": 0.8, "penalty": "none"},
@@ -116,10 +116,11 @@ def test_forward_v9_batches_multiple_form_pairs_into_one_tool_result():
 			{"surface": "aga", "candidate_ids": ["東an", "上av"]},
 			{"surface": "ga", "candidate_ids": ["itf:ga", "int:ga"]},
 		]},
-		{"dialect_region": "宮古"}, 2,
+		{"sentence_id": 77, "dialect_region": "宮古"}, 2,
 	)
 	assert len(result["items"]) == 2
 	assert len(agent.nrdb.form_calls) == 4
+	assert all(call[-1] == 77 for call in agent.nrdb.form_calls)
 	assert set(agent._shared_evidence["form"]) == {"aga\t東an", "aga\t上av", "ga\titf:ga", "ga\tint:ga"}
 
 

@@ -2,6 +2,8 @@
 
 This workflow freezes a reproducible sample of human-translated NRDB sentences, generates blind translations under a declared baseline construction policy, identifies semantic discrepancies, and then reruns the same sample against the currently enabled construction knowledge after reviewed grammatical records have been added.
 
+Evidence blindness is declared when the cohort is created and inherited unchanged by both `discrepancy-run` and `discrepancy-check`. The default `--blind-policy row` excludes the sentence currently being translated from corpus examples and form-ID support. `--blind-policy cohort` excludes every distinct sentence selected for the experiment from corpus-backed evidence throughout both runs. Use cohort blindness when testing generalization rather than normal production behavior. Dictionaries, construction records, and human-authored licensed forms remain available because they are explicit knowledge sources rather than held-out corpus examples.
+
 The artifacts are local JSON files. They do not modify NRDB, the gold corpus, or `annotation_constructions`.
 
 ## 1. Freeze a discovery cohort
@@ -12,6 +14,7 @@ Every requested exact morpheme ID is sampled independently. `--limit 50` means u
 nrdb-agent discrepancy-create adv foc 'ppt>2' \
 	--annotation-schema 2 \
 	--region 宮古 \
+	--blind-policy cohort \
 	--limit 50 \
 	--min-morphemes 4 \
 	--gold-morph \

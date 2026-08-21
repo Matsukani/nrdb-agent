@@ -86,6 +86,7 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	model_name="gpt-5.6", surface_model=None, id_model=None, semantic_feedback="generated",
 	require_semantic_feedback=False, use_constructions=False, use_licensed_forms=False,
 	existing_translation=None, fixed_segmented=None, fixed_annotation=None,
+	sentence_id=0,
 	openai_client=None, progress=print):
 	text = str(text or "").strip()
 	region = str(region or "").strip()
@@ -142,7 +143,7 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 		progress("  morph: segmented={!r} annotation={!r}".format(morph.get("segmented", ""), morph.get("annotation", "")))
 		if id_model and not use_fixed_morphology:
 			progress("  forward ID critic: {}".format(id_model))
-		item = {"sentence_id": 0, "dialect_id": dialect_id, "dialect_region": region, "text": text, "translation_jp": existing_translation if semantic_feedback in {"existing", "auto"} else None}
+		item = {"sentence_id": int(sentence_id or 0), "dialect_id": dialect_id, "dialect_region": region, "text": text, "translation_jp": existing_translation if semantic_feedback in {"existing", "auto"} else None}
 		job = {
 			"annotation_schema_id": annotation_schema_id, "model_name": model_name,
 			"prompt_version": "annotation-v9", "task": "morph-translate",

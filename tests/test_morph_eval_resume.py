@@ -49,6 +49,7 @@ def _meta(**values):
 		"semantic_feedback": "none",
 		"require_semantic_feedback": False,
 		"translation_filter": "any",
+		"blind_policy": "row",
 		"evidence_exclusion": {"datasets": [], "texts": [], "sentence_ranges": []},
 		"use_licensed_forms": False,
 	}
@@ -115,3 +116,18 @@ def test_evidence_scope_combines_dataset_text_and_ranges():
 		"texts": [[21, 50]],
 		"sentence_ranges": [[31, 12, 21]],
 	}
+
+
+def test_cohort_blind_scope_adds_only_sampled_rows():
+	from nrdb_agent.blindness import normalize_evidence_scope
+
+	scope = normalize_evidence_scope(
+		blind_policy="cohort",
+		cohort_rows=[
+			{"dataset_id": 30, "sentence_id": 10},
+			{"dataset_id": 30, "sentence_id": 11},
+			{"dataset_id": 30, "sentence_id": 14},
+			{"dataset_id": 21, "sentence_id": 5},
+		],
+	)
+	assert scope["sentence_ranges"] == [[21, 5, 5], [30, 10, 11], [30, 14, 14]]

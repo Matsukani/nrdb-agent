@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .annotator import AnnotationAgent, _response_incomplete_reason
+from .blindness import normalize_blind_policy, normalize_evidence_scope
 from .metrics import annotation_ids
 from .translate import translate_text
 from .usage import UsageTracker, tracked_client
@@ -128,6 +129,7 @@ def list_discoveries(directory=".", recursive=False, latest=None):
 			"discrepancy_model": models.get("discrepancy"),
 			"morphology": models.get("morphology") or ("gold_required" if selection.get("require_gold_morph") else "predicted"),
 			"constructions": models.get("constructions") or ("enabled_declared" if selection.get("baseline_use_constructions") else "disabled"),
+			"blind_policy": selection.get("blind_policy") or "legacy_unrestricted",
 			"counts": dict(summary.get("counts") or {}), "failed_rows": failed,
 			"estimated_cost_usd": summary.get("estimated_cost_usd"), "pricing_complete": summary.get("pricing_complete"),
 		})
@@ -150,7 +152,8 @@ def _row_targets(row, target_ids):
 
 def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region, limit=100,
 	seed=1, min_morphemes=1, require_all=False, require_gold_morph=False,
-	use_constructions=False, output=None):
+	use_constructions=False, blind_policy="row", output=None):
+	blind_policy = normalize_blind_policy(blind_policy)
 	target_ids = list(dict.fromkeys(str(value).strip() for value in target_ids if str(value).strip()))
 	if not target_ids:
 		raise ValueError("at least one target morpheme ID is required")
@@ -196,6 +199,7 @@ def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region
 			selected.append(assignment)
 	if not selected:
 		raise ValueError("no translated gold rows match the requested morphemes and scope")
+	evidence_exclusion = normalize_evidence_scope(blind_policy=blind_policy, cohort_rows=selected)
 	payload = {
 		"format": DISCOVERY_FORMAT,
 		"selection": {
@@ -203,6 +207,7 @@ def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region
 			"annotation_schema_id": int(annotation_schema_id), "region": str(region),
 			"limit_per_id": int(limit), "limit": int(limit), "seed": int(seed), "min_morphemes": int(min_morphemes),
 			"require_gold_morph": bool(require_gold_morph), "baseline_use_constructions": bool(use_constructions),
+			"blind_policy": blind_policy, "evidence_exclusion": evidence_exclusion,
 			"match": "all" if require_all else "independent_per_id",
 			"eligible_pool_size_by_id": pool_sizes, "sampled_rows_by_id": sampled_by_id,
 			"eligible_assignments": sum(pool_sizes.values()), "sampled_assignments": len(selected),
@@ -212,6 +217,26 @@ def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region
 	if output:
 		_write(output, payload)
 	return payload
+
+
+def _apply_discovery_blindness(nrdb, selection):
+	if "blind_policy" not in selection:
+		# Artifacts made before explicit blindness used sentence_id=0 and no cohort scope.
+		# Preserve that boundary so an old baseline/check comparison is not silently changed.
+		nrdb.set_evidence_exclusion(datasets=[], texts=[], sentence_ranges=[])
+		return "legacy_unrestricted", {"datasets": [], "texts": [], "sentence_ranges": []}
+	policy = normalize_blind_policy(selection.get("blind_policy"))
+	scope = selection.get("evidence_exclusion") or normalize_evidence_scope(blind_policy=policy)
+	nrdb.set_evidence_exclusion(
+		datasets=scope.get("datasets", []),
+		texts=[tuple(value) for value in scope.get("texts", [])],
+		sentence_ranges=[tuple(value) for value in scope.get("sentence_ranges", [])],
+	)
+	return policy, scope
+
+
+def _blind_sentence_id(policy, source):
+	return 0 if policy == "legacy_unrestricted" else int(source["sentence_id"])
 
 
 class DiscrepancyJudge(AnnotationAgent):
@@ -333,6 +358,8 @@ def run_discovery(nrdb, discovery_path, output, translation_model="gpt-5.6-luna"
 	discrepancy_model="gpt-5.6-terra", use_gold_morph=False, use_constructions=False,
 	openai_client=None, progress=print):
 	discovery = _read(discovery_path, DISCOVERY_FORMAT)
+	blind_policy, evidence_exclusion = _apply_discovery_blindness(nrdb, discovery.get("selection") or {})
+	progress("blind policy: {} | evidence exclusion ranges={}".format(blind_policy, len(evidence_exclusion.get("sentence_ranges", []))))
 	if use_gold_morph and not discovery.get("selection", {}).get("require_gold_morph"):
 		raise ValueError("--gold-morph requires a cohort created with discrepancy-create --gold-morph")
 	cohort_constructions = bool(discovery.get("selection", {}).get("baseline_use_constructions"))
@@ -355,6 +382,7 @@ def run_discovery(nrdb, discovery_path, output, translation_model="gpt-5.6-luna"
 				use_constructions=use_constructions, openai_client=openai_client, progress=progress,
 				fixed_segmented=source["gold_segmented"] if use_gold_morph else None,
 				fixed_annotation=source["gold_annotation"] if use_gold_morph else None,
+				sentence_id=_blind_sentence_id(blind_policy, source),
 			)
 			row["baseline"] = generated
 			row["baseline_judgment"] = judge.discrepancy(row, generated)
@@ -374,6 +402,8 @@ def run_discovery(nrdb, discovery_path, output, translation_model="gpt-5.6-luna"
 def check_discovery(nrdb, baseline_path, output, translation_model=None,
 	discrepancy_model="gpt-5.6-terra", openai_client=None, progress=print):
 	baseline = _read(baseline_path, BASELINE_FORMAT)
+	blind_policy, evidence_exclusion = _apply_discovery_blindness(nrdb, baseline.get("selection") or {})
+	progress("blind policy: {} | evidence exclusion ranges={}".format(blind_policy, len(evidence_exclusion.get("sentence_ranges", []))))
 	baseline_model = str((baseline.get("models") or {}).get("translation") or "")
 	use_gold_morph = str((baseline.get("models") or {}).get("morphology") or "predicted") == "gold"
 	translation_model = str(translation_model or baseline_model)
@@ -399,6 +429,7 @@ def check_discovery(nrdb, baseline_path, output, translation_model=None,
 					use_constructions=True, openai_client=openai_client, progress=progress,
 					fixed_segmented=source["gold_segmented"] if use_gold_morph else None,
 					fixed_annotation=source["gold_annotation"] if use_gold_morph else None,
+					sentence_id=_blind_sentence_id(blind_policy, source),
 				)
 				row["construction"] = construction
 				row["repair_judgment"] = judge.repair(row, source["baseline"], construction)

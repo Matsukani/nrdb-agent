@@ -6,6 +6,16 @@ from nrdb_agent import discrepancy
 
 
 class FakeNrdb:
+	def __init__(self):
+		self.evidence_exclusion = None
+
+	def set_evidence_exclusion(self, datasets=None, texts=None, sentence_ranges=None):
+		self.evidence_exclusion = {
+			"datasets": list(datasets or []), "texts": list(texts or []),
+			"sentence_ranges": list(sentence_ranges or []),
+		}
+		return self.evidence_exclusion
+
 	def morph_eval_rows(self, dataset_ids, annotation_schema_id=None, region=None):
 		assert dataset_ids in ([], [30])
 		assert annotation_schema_id == 2
@@ -45,6 +55,9 @@ class FakeJudge:
 
 
 class OverlapNrdb:
+	def set_evidence_exclusion(self, datasets=None, texts=None, sentence_ranges=None):
+		return None
+
 	def morph_eval_rows(self, dataset_ids, annotation_schema_id=None, region=None):
 		return [{
 			"sentence_id": 9, "dataset_id": 30, "example_id": "overlap", "dialect_id": 19,
@@ -54,6 +67,9 @@ class OverlapNrdb:
 
 
 class MissingGoldMorphNrdb:
+	def set_evidence_exclusion(self, datasets=None, texts=None, sentence_ranges=None):
+		return None
+
 	def morph_eval_rows(self, dataset_ids, annotation_schema_id=None, region=None):
 		return [{
 			"sentence_id": 10, "dataset_id": 30, "example_id": "missing-seg", "dialect_id": 19,
@@ -96,6 +112,17 @@ def test_create_discovery_samples_each_target_independently_and_keeps_overlap_as
 	assert result["selection"]["sampled_rows_by_id"] == {"adv": 1, "foc": 1}
 
 
+def test_create_discovery_records_cohort_blind_evidence_boundary(tmp_path):
+	result = discrepancy.create_discovery(
+		FakeNrdb(), ["adv", "foc"], [30], 2, "宮古", limit=10,
+		blind_policy="cohort", output=tmp_path / "cohort.json",
+	)
+	assert result["selection"]["blind_policy"] == "cohort"
+	assert result["selection"]["evidence_exclusion"] == {
+		"datasets": [], "texts": [], "sentence_ranges": [[30, 1, 2]],
+	}
+
+
 def test_create_discovery_gold_morph_requires_segmentation_and_annotation(tmp_path):
 	with pytest.raises(ValueError, match="no translated gold rows"):
 		discrepancy.create_discovery(
@@ -112,7 +139,7 @@ def test_run_and_check_keep_translation_and_judge_models_separate(tmp_path, monk
 	calls = []
 
 	def fake_translate(nrdb, text, target, schema, region, **kwargs):
-		calls.append((kwargs["model_name"], kwargs["use_constructions"], kwargs.get("id_model")))
+		calls.append((kwargs["model_name"], kwargs["use_constructions"], kwargs.get("id_model"), kwargs.get("sentence_id")))
 		return {"annotation": "A-adv C", "translation": "生成訳", "api_usage": {}}
 
 	monkeypatch.setattr(discrepancy, "translate_text", fake_translate)
@@ -122,7 +149,7 @@ def test_run_and_check_keep_translation_and_judge_models_separate(tmp_path, monk
 		translation_model="gpt-5.6-luna", discrepancy_model="gpt-5.6-sol",
 	)
 	assert baseline["models"] == {"translation": "gpt-5.6-luna", "discrepancy": "gpt-5.6-sol", "morphology": "predicted", "id_critic": "nrdb_agent_default", "constructions": "disabled"}
-	assert calls == [("gpt-5.6-luna", False, None)]
+	assert calls == [("gpt-5.6-luna", False, None, 1)]
 	assert baseline["summary"]["morphemes_to_analyse"][0]["morph_id"] == "adv"
 	assert baseline["summary"]["morphemes_to_analyse"][0]["candidate_patterns"] == [{"pattern": "V-neg-adv", "count": 1}]
 
@@ -134,7 +161,7 @@ def test_run_and_check_keep_translation_and_judge_models_separate(tmp_path, monk
 	assert checked["models"]["discrepancy"] == "gpt-5.6-terra"
 	assert checked["models"]["constructions"] == "enabled_current"
 	assert checked["baseline_models"]["constructions"] == "disabled"
-	assert calls[-1] == ("gpt-5.6-luna", True, None)
+	assert calls[-1] == ("gpt-5.6-luna", True, None, 1)
 	assert checked["summary"]["counts"]["repaired"] == 1
 
 
@@ -188,6 +215,26 @@ def test_run_uses_declared_current_constructions(tmp_path, monkeypatch):
 	)
 	assert calls[0]["use_constructions"] is True
 	assert baseline["models"]["constructions"] == "enabled_current"
+
+
+def test_run_and_check_apply_frozen_cohort_blind_scope(tmp_path, monkeypatch):
+	cohort_path = tmp_path / "cohort.json"
+	baseline_path = tmp_path / "baseline.json"
+	nrdb = FakeNrdb()
+	discrepancy.create_discovery(
+		nrdb, ["adv", "foc"], [30], 2, "宮古", limit=10,
+		blind_policy="cohort", output=cohort_path,
+	)
+
+	def fake_translate(nrdb, text, target, schema, region, **kwargs):
+		return {"annotation": "A-adv C", "translation": "生成訳", "api_usage": {}}
+
+	monkeypatch.setattr(discrepancy, "translate_text", fake_translate)
+	monkeypatch.setattr(discrepancy, "DiscrepancyJudge", FakeJudge)
+	discrepancy.run_discovery(nrdb, cohort_path, baseline_path)
+	assert nrdb.evidence_exclusion["sentence_ranges"] == [(30, 1, 2)]
+	discrepancy.check_discovery(nrdb, baseline_path, tmp_path / "check.json")
+	assert nrdb.evidence_exclusion["sentence_ranges"] == [(30, 1, 2)]
 
 
 @pytest.mark.parametrize("created_with,run_with", [(True, False), (False, True)])

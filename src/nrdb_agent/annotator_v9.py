@@ -248,7 +248,7 @@ class AnnotationAgentV9(AnnotationAgentV8):
 						result = {"success": True, "surface": surface, "candidate_id": candidate, "region": None, "combined": {"surface_total": 0, "candidate_count": 0, "candidate_rate": None, "penalty": "none"}, "corpus": {}, "lexicon": {}}
 						cache_hit = False
 					else:
-						result = self.nrdb.form_id_support(surface, candidate, region, schema_id)
+						result = self.nrdb.form_id_support(surface, candidate, region, schema_id, exclude_sentence_id=item.get("sentence_id", 0))
 						self._cache_form(surface, candidate, result)
 						cache_hit = False
 					compact = _compact_tool_result("form_id_support", result)

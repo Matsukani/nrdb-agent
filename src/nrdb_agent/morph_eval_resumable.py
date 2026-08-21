@@ -3,6 +3,7 @@ import os
 import random
 from pathlib import Path
 
+from .blindness import normalize_blind_policy, normalize_evidence_scope
 from .dataset_io import write_json, write_tsv
 from .licensed_agent import LicensedTaskAwareAnnotationAgent
 from .metrics import annotation_metrics, segmentation_metrics
@@ -11,7 +12,7 @@ from .task_agent import SEMANTIC_FEEDBACK_MODES, TaskAwareAnnotationAgent
 from .usage import UsageTracker, tracked_client
 
 
-CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v5"
+CHECKPOINT_FORMAT = "nrdb-agent.morph-ceiling-checkpoint.v6"
 TRANSLATION_FILTERS = {"any", "present", "absent"}
 
 
@@ -67,20 +68,7 @@ def _load_checkpoint(path):
 
 
 def _normalize_evidence_scope(datasets=None, texts=None, sentence_ranges=None, auto_text=None):
-	dataset_values = sorted({int(value) for value in (datasets or []) if int(value) > 0})
-	text_values = {(int(dataset_id), int(text_id)) for dataset_id, text_id in (texts or []) if int(dataset_id) > 0 and int(text_id) > 0}
-	if auto_text is not None:
-		text_values.add((int(auto_text[0]), int(auto_text[1])))
-	range_values = {
-		(int(dataset_id), int(start), int(end))
-		for dataset_id, start, end in (sentence_ranges or [])
-		if int(dataset_id) > 0 and int(start) > 0 and int(end) >= int(start)
-	}
-	return {
-		"datasets": dataset_values,
-		"texts": [list(value) for value in sorted(text_values)],
-		"sentence_ranges": [list(value) for value in sorted(range_values)],
-	}
+	return normalize_evidence_scope(datasets, texts, sentence_ranges, auto_text)
 
 
 def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
@@ -134,7 +122,7 @@ def _build_cohort(nrdb, contract, dataset_ids, limit, seed, semantic_feedback,
 
 def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_model, id_model,
 	semantic_feedback, require_semantic_feedback, translation_filter, evidence_exclusion,
-	use_licensed_forms):
+	use_licensed_forms, blind_policy):
 	return {
 		"record_type": "meta",
 		"format": CHECKPOINT_FORMAT,
@@ -151,6 +139,7 @@ def _checkpoint_meta(contract, cohort, model_name, limit, seed, expected_morph_m
 		"semantic_feedback": str(semantic_feedback),
 		"require_semantic_feedback": bool(require_semantic_feedback),
 		"translation_filter": str(translation_filter),
+		"blind_policy": str(blind_policy),
 		"evidence_exclusion": evidence_exclusion,
 		"use_licensed_forms": bool(use_licensed_forms),
 	}
@@ -163,6 +152,7 @@ def _verify_checkpoint(expected, actual):
 		"format", "morph_run", "train_path", "datasets", "text_internal_id", "cohort_sentence_ids",
 		"limit", "seed", "agent_model", "expected_morph_model", "id_model",
 		"semantic_feedback", "require_semantic_feedback", "translation_filter", "evidence_exclusion",
+		"blind_policy",
 	):
 		if actual.get(key) != expected.get(key):
 			raise ValueError("checkpoint does not match this evaluation: {} differs".format(key))
@@ -175,10 +165,12 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 	resume=False, semantic_feedback="none", require_semantic_feedback=False,
 	translation_filter="any", text_internal_id=None, evidence_exclude_datasets=None,
 	evidence_exclude_texts=None, evidence_exclude_sentence_ranges=None, use_licensed_forms=False,
+	blind_policy="row",
 	openai_client=None, progress=print):
 	semantic_feedback = str(semantic_feedback or "none")
 	translation_filter = str(translation_filter or "any")
 	use_licensed_forms = bool(use_licensed_forms)
+	blind_policy = normalize_blind_policy(blind_policy)
 	if semantic_feedback not in SEMANTIC_FEEDBACK_MODES:
 		raise ValueError("invalid semantic_feedback: {}".format(semantic_feedback))
 	if translation_filter not in TRANSLATION_FILTERS:
@@ -197,17 +189,20 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 	auto_text = None
 	if text_internal_id is not None:
 		auto_text = (cohort["dataset_ids"][0], text_internal_id)
-	evidence_exclusion = _normalize_evidence_scope(
+	evidence_exclusion = normalize_evidence_scope(
 		datasets=evidence_exclude_datasets,
 		texts=evidence_exclude_texts,
 		sentence_ranges=evidence_exclude_sentence_ranges,
 		auto_text=auto_text,
+		blind_policy=blind_policy,
+		cohort_rows=cohort["rows"],
 	)
 	nrdb.set_evidence_exclusion(
 		datasets=evidence_exclusion["datasets"],
 		texts=[tuple(value) for value in evidence_exclusion["texts"]],
 		sentence_ranges=[tuple(value) for value in evidence_exclusion["sentence_ranges"]],
 	)
+	progress("blind policy: {}".format(blind_policy))
 	progress("evidence exclusion: datasets={} texts={} sentence_ranges={}".format(
 		evidence_exclusion["datasets"], evidence_exclusion["texts"], evidence_exclusion["sentence_ranges"],
 	))
@@ -216,7 +211,7 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 	expected_meta = _checkpoint_meta(
 		contract, cohort, model_name, limit, seed, expected_morph_model, id_model,
 		semantic_feedback, require_semantic_feedback, translation_filter, evidence_exclusion,
-		use_licensed_forms,
+		use_licensed_forms, blind_policy,
 	)
 
 	existing_meta, existing_rows = _load_checkpoint(checkpoint_path)
@@ -322,6 +317,7 @@ def evaluate_morph_agent_resumable(nrdb, run_dir, model_name="gpt-5.6", limit=No
 		"semantic_feedback": semantic_feedback,
 		"require_semantic_feedback": bool(require_semantic_feedback),
 		"translation_filter": translation_filter,
+		"blind_policy": blind_policy,
 		"use_licensed_forms": use_licensed_forms,
 		"evidence_exclusion": evidence_exclusion,
 		"estimated_cost_usd": total_cost,

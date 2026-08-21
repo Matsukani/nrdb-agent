@@ -203,3 +203,5 @@ With `--verbose`, construction-aware runs report `translation-v7: construction p
 ## Legacy jobs
 
 The old `--mode blind_gold|unannotated`, `--prompt-version`, `--translate`, `--blind-translation`, and hidden `--translation-evidence` compatibility path remain accepted. New workflows should use the orthogonal controls explicitly.
+
+For `nrdb-agent-morph-eval`, corpus evidence is row-blind by default: the currently scored sentence is excluded from corpus examples and form-ID support. Use `--blind-policy cohort` to exclude every sampled evaluation sentence from corpus-backed evidence for the complete run. The selected policy and resulting exclusion ranges are stored in the durable checkpoint and cannot change on resume. Explicit `--exclude-dataset`, `--exclude-text`, and `--exclude-sentences` restrictions are combined with the selected policy. Dictionaries and human-curated licensed forms remain available as declared knowledge sources.

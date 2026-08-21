@@ -47,7 +47,7 @@ def _print_discrepancy_list(rows):
 		models = ""
 		if row.get("translation_model") or row.get("discrepancy_model"):
 			models = " | models={}/{}".format(row.get("translation_model") or "-", row.get("discrepancy_model") or "-")
-		conditions = " | morph={} constructions={}".format(row.get("morphology") or "-", row.get("constructions") or "-")
+		conditions = " | morph={} constructions={} blind={}".format(row.get("morphology") or "-", row.get("constructions") or "-", row.get("blind_policy") or "-")
 		cost = ""
 		if row.get("pricing_complete"):
 			cost = " | ${:.4f}".format(float(row.get("estimated_cost_usd") or 0.0))
@@ -389,6 +389,7 @@ def main():
 	discrepancy_create.add_argument("--require-all", action="store_true", help="Require every requested ID; default matches any requested ID")
 	discrepancy_create.add_argument("--gold-morph", action="store_true", help="Keep only rows with gold segmentation and annotation, for frozen-morphology translation")
 	discrepancy_create.add_argument("--constructions", action="store_true", help="Declare that the baseline will use the currently enabled grammatical constructions")
+	discrepancy_create.add_argument("--blind-policy", choices=["row", "cohort"], default="row", help="row excludes the current sentence; cohort excludes every selected sentence from run and check evidence")
 	discrepancy_create.add_argument("--output", required=True, help="Write the frozen discovery cohort JSON")
 
 	discrepancy_run = sub.add_parser("discrepancy-run", help="Generate blind translations and judge them against gold")
@@ -550,7 +551,7 @@ def main():
 			nrdb, args.ids, args.dataset_ids, args.annotation_schema_id, args.region,
 			limit=args.limit, seed=args.seed, min_morphemes=args.min_morphemes,
 			require_all=args.require_all, require_gold_morph=args.gold_morph,
-			use_constructions=args.constructions, output=args.output,
+			use_constructions=args.constructions, blind_policy=args.blind_policy, output=args.output,
 		)
 		print("created {} frozen assignment(s), up to {} per ID: {}".format(len(value["rows"]), value["selection"]["limit_per_id"], args.output))
 		print("per ID: {}".format(json.dumps(value["selection"]["sampled_rows_by_id"], ensure_ascii=False)))
