@@ -1,6 +1,6 @@
 import pytest
 
-from nrdb_agent.annotator_v7 import AnnotationAgentV7, V7_TRANSLATION_INSTRUCTIONS
+from nrdb_agent.annotator_v7 import AnnotationAgentV7, V7_TRANSLATION_FORMAT, V7_TRANSLATION_INSTRUCTIONS
 
 
 class FakeNrdb:
@@ -32,6 +32,7 @@ class FakeNrdb:
 			"candidates": [{
 				"id": 1,
 				"name": "completive_irr_neg",
+				"entry_type": "construction",
 				"trigger_id": "irr",
 				"pattern": "V;cvb irr-neg",
 				"meaning_jp": "Vてしまった",
@@ -50,6 +51,54 @@ def test_v7_translation_instructions_prioritize_matching_curated_constructions()
 	assert "trigger hit alone does NOT prove" in V7_TRANSLATION_INSTRUCTIONS
 	assert "interpret the WHOLE construction" in V7_TRANSLATION_INSTRUCTIONS
 	assert "outranks a conflicting default atom-by-atom interpretation" in V7_TRANSLATION_INSTRUCTIONS
+
+
+def test_v7_translation_instructions_define_provisional_local_namespaces_and_global_pos():
+	assert "`l:` are local lexical IDs" in V7_TRANSLATION_INSTRUCTIONS
+	assert "`exp:` IDs are expressives" in V7_TRANSLATION_INSTRUCTIONS
+	assert "`intj:` IDs are interjectives" in V7_TRANSLATION_INSTRUCTIONS
+	assert "this includes `dm:` demonstratives" in V7_TRANSLATION_INSTRUCTIONS
+	assert "coarse structural POS metadata" in V7_TRANSLATION_INSTRUCTIONS
+	assert "Global IDs may also anchor or participate" in V7_TRANSLATION_INSTRUCTIONS
+
+
+def test_v7_translation_format_requires_structured_grammar_audit():
+	evidence = V7_TRANSLATION_FORMAT["schema"]["properties"]["translation_evidence"]
+	for field in ("consulted_morpheme_entry_ids", "applied_construction_entry_ids", "rejected_construction_entry_ids"):
+		assert field in evidence["required"]
+
+
+def test_v7_grammar_audit_covers_every_retrieved_row_exactly_once():
+	candidates = [{"id": 4, "entry_type": "morpheme"}, {"id": 8, "entry_type": "construction"}, {"id": 9, "entry_type": "construction"}]
+	translation = {"translation_evidence": {
+		"consulted_morpheme_entry_ids": [4],
+		"applied_construction_entry_ids": [8],
+		"rejected_construction_entry_ids": [9],
+	}}
+	assert AnnotationAgentV7._validate_grammar_audit(translation, candidates) is translation
+
+
+def test_v7_grammar_audit_rejects_unclassified_construction():
+	candidates = [{"id": 4, "entry_type": "morpheme"}, {"id": 8, "entry_type": "construction"}]
+	translation = {"translation_evidence": {
+		"consulted_morpheme_entry_ids": [4],
+		"applied_construction_entry_ids": [],
+		"rejected_construction_entry_ids": [],
+	}}
+	with pytest.raises(ValueError, match="classify every retrieved construction"):
+		AnnotationAgentV7._validate_grammar_audit(translation, candidates)
+
+
+def test_v7_without_constructions_requires_empty_grammar_audit():
+	translation = {"translation_evidence": {
+		"consulted_morpheme_entry_ids": [],
+		"applied_construction_entry_ids": [],
+		"rejected_construction_entry_ids": [],
+	}}
+	assert AnnotationAgentV7._validate_grammar_audit(translation, []) is translation
+	translation["translation_evidence"]["consulted_morpheme_entry_ids"] = [4]
+	with pytest.raises(ValueError, match="audit every retrieved morpheme"):
+		AnnotationAgentV7._validate_grammar_audit(translation, [])
 
 
 def test_v7_batch_grounding_uses_dictionary_meanings():
@@ -87,4 +136,4 @@ def test_v7_finalization_requires_dictionary_grounding():
 	assert agent._has_dictionary_grounding([{"tool": "corpus_examples"}]) is False
 	assert agent._has_dictionary_grounding([{"tool": "ground_lexical_ids"}]) is True
 	with pytest.raises(RuntimeError, match="cannot finalize without dictionary grounding"):
-		agent._finalize_translation_v7([], [], "test")
+		agent._finalize_translation_v7([], [], [], "test")

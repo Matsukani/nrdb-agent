@@ -37,7 +37,9 @@ The backward-compatible NRDB table `annotation_constructions` stores schema/regi
 - `realization_jp`: a strong Japanese realization hint;
 - `note`, `priority`, and `enabled`.
 
-An exact trigger hit applies a `morpheme` row directly. A trigger hit retrieves a `construction` row as a candidate only: the translator must verify that the full pattern fits the frozen annotation before using it. When it fits, the curated construction meaning specializes and may outrank the default morpheme or atom-by-atom reading. This is especially useful for non-compositional Miyako grammatical sequences such as `V;cvb irr-neg`.
+An exact trigger hit makes a `morpheme` policy applicable: the translator must consult it but must still choose a contextual realization rather than substitute `realization_jp` mechanically. A trigger hit retrieves a `construction` row as a candidate only: the translator must verify that the full pattern fits the frozen annotation before using it. When it fits, the curated construction meaning specializes and may outrank the default morpheme or atom-by-atom reading. The translation audit records every consulted morpheme row and classifies every retrieved construction row as applied or rejected.
+
+Until NRDB has an explicit local morph-ID classification table, translation uses a deliberately small namespace policy: `l:` is local lexical, `exp:` expressive, `intj:` interjective, and every other schema-local ID is provisionally grammatical, including `dm:` demonstratives. Global IDs retain semantically opaque stems but expose their final `n/v/a/o` structural POS code for construction-placeholder matching; global IDs remain eligible construction anchors.
 
 The first resource is intentionally hand-curated and rerunnable from NRDB's:
 

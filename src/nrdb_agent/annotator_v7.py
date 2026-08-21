@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 
 from .annotator import (
 	AnnotationAgent,
@@ -19,14 +20,17 @@ Core principles:
 - Most NRDB annotation labels are IDENTIFIERS, not glosses. Do not normally infer lexical meaning from kanji, spelling, or other human-readable material embedded in an ID label.
 - Exception: IDs in the reserved `n:` namespace explicitly represent Japanese lexical material. For example, `n:手紙` directly licenses Japanese 手紙 and does not require dictionary grounding to establish that lexical meaning. Treat the material following `n:` as Japanese lexical content, while still respecting surrounding Miyako grammar and constructional evidence.
 - Outside the reserved `n:` namespace, dictionary and corpus evidence outrank apparent semantics suggested by an ID's spelling. Only as a last resort, when an otherwise ungrounded lexical ID is transparently descriptive and no retrieved evidence contradicts it, you may use that transparent lexical content conservatively. Record such use as weak/ungrounded evidence rather than as authoritative dictionary grounding.
-- When construction_evidence is supplied, it contains explicit grammatical knowledge curated in NRDB. A row with entry_type `morpheme` applies when its exact trigger_id occurs and supplies the default grammatical function/translation policy. For entry_type `construction`, a trigger hit alone does NOT prove that the construction applies: verify that its full pattern fits the relevant annotation span. A matching construction specializes and may override the general morpheme policy.
+- Schema-local IDs beginning with `l:` are local lexical IDs, `exp:` IDs are expressives, and `intj:` IDs are interjectives. Treat those three namespaces as content-bearing and dictionary-ground them when they contribute to the translation. Provisionally treat every other schema-local ID as grammatical; this includes `dm:` demonstratives. This is a routing policy, not a claim that grammatical IDs lack meaning or that lexical IDs cannot participate in constructions.
+- Global IDs have a Japanese-character stem followed by a structural code such as `kn`, `nv`, or `ia`, optionally followed by a numeral, as in `漢字kn` or `漢字kn2`. The final `n`, `v`, `a`, or `o` before any numeral is coarse structural POS metadata (nominal, verbal, adjectival, or other) and may be used to match N/V/A/X construction placeholders. The Japanese characters remain semantically opaque identifiers: recover lexical meaning from dictionary evidence, not from the characters. Global IDs may also anchor or participate in grammatical constructions.
+- When construction_evidence is supplied, it contains explicit grammatical knowledge curated in NRDB. A row with entry_type `morpheme` is an applicable default interpretive policy when its exact trigger_id occurs; consult it, but do not treat realization_jp as an automatic substitution. For entry_type `construction`, a trigger hit alone does NOT prove that the construction applies: verify that its full pattern fits the relevant annotation span. A matching construction specializes and may override the general morpheme policy.
 
 Goal: produce a concise, natural Japanese translation grounded in the frozen annotation, explicit constructional evidence when enabled, bilingual dictionary data, and selectively retrieved corpus evidence.
 
 Rules:
 - First inspect any supplied construction_evidence. Pattern notation is lightweight linguistic notation over NRDB annotation: V/N/A/X are schematic content-word placeholders; literal IDs occur as written; `;`, `-`, and spaces retain their normal NRDB annotation meanings.
-- Apply a `morpheme` row on its exact trigger hit. Apply a `construction` row only when its full pattern fits; do not apply a construction merely because its trigger_id is present.
+- Consult every retrieved `morpheme` row on its exact trigger hit, then choose its contextually appropriate realization. Apply a `construction` row only when its full pattern fits; do not apply a construction merely because its trigger_id is present.
 - When a construction applies, interpret the WHOLE construction: it outranks a conflicting default atom-by-atom interpretation. Its meaning_jp is strong grammatical evidence and realization_jp is a strong Japanese realization hint, not a blind string-substitution command. Ground captured/content lexical IDs from the dictionary and realize the construction naturally in context.
+- Audit grammar use by ID. List every consulted morpheme row in consulted_morpheme_entry_ids. Classify every retrieved construction row exactly once as applied or rejected in applied_construction_entry_ids or rejected_construction_entry_ids. Use only IDs supplied in construction_evidence; when no rows are supplied, return empty arrays.
 - Before translating, ground the non-`n:` lexical/content IDs that contribute referential or predicate meaning with ground_lexical_ids. Batch several IDs in one call. Dictionary meaning_jp/explanation_jp outrank any apparent meaning suggested by a non-`n:` ID label.
 - `n:` IDs are already explicit Japanese lexical material and need not be sent to ground_lexical_ids merely to recover their Japanese meaning.
 - ground_lexical_ids accepts exact atomic NRDB annotation IDs only. Never put commentary, questions, guessed decompositions, full phrases, or explanatory text inside the labels array.
@@ -41,8 +45,20 @@ Rules:
 - Do not produce chain-of-thought.
 
 Final response must be one JSON object and no surrounding prose:
-{"trsl_ai":"...","confidence":0.0,"translation_evidence":{"dictionary_ids":[],"example_sentence_ids":[],"ungrounded_ids":[],"note":"brief"}}
+{"trsl_ai":"...","confidence":0.0,"translation_evidence":{"dictionary_ids":[],"example_sentence_ids":[],"ungrounded_ids":[],"consulted_morpheme_entry_ids":[],"applied_construction_entry_ids":[],"rejected_construction_entry_ids":[],"note":"brief"}}
 """
+
+
+V7_TRANSLATION_FORMAT = deepcopy(TRANSLATION_FORMAT)
+V7_EVIDENCE_SCHEMA = V7_TRANSLATION_FORMAT["schema"]["properties"]["translation_evidence"]
+V7_EVIDENCE_SCHEMA["properties"].update({
+	"consulted_morpheme_entry_ids": {"type": "array", "items": {"type": "integer"}},
+	"applied_construction_entry_ids": {"type": "array", "items": {"type": "integer"}},
+	"rejected_construction_entry_ids": {"type": "array", "items": {"type": "integer"}},
+})
+V7_EVIDENCE_SCHEMA["required"].extend([
+	"consulted_morpheme_entry_ids", "applied_construction_entry_ids", "rejected_construction_entry_ids",
+])
 
 
 GROUND_LEXICAL_IDS_TOOL = {
@@ -67,6 +83,33 @@ GROUND_LEXICAL_IDS_TOOL = {
 
 
 class AnnotationAgentV7(AnnotationAgent):
+	@staticmethod
+	def _validate_grammar_audit(translation, candidates):
+		evidence = translation.get("translation_evidence")
+		if not isinstance(evidence, dict):
+			raise ValueError("translation returned no audit evidence")
+		if any(value.get("entry_type") not in ("morpheme", "construction") for value in candidates):
+			raise ValueError("construction endpoint returned an invalid entry_type")
+
+		def audit_ids(field):
+			values = evidence.get(field)
+			if not isinstance(values, list) or any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+				raise ValueError("translation returned invalid {}".format(field))
+			if len(values) != len(set(values)):
+				raise ValueError("translation returned duplicate IDs in {}".format(field))
+			return set(values)
+
+		consulted = audit_ids("consulted_morpheme_entry_ids")
+		applied = audit_ids("applied_construction_entry_ids")
+		rejected = audit_ids("rejected_construction_entry_ids")
+		morpheme_ids = {int(value["id"]) for value in candidates if value.get("entry_type") == "morpheme"}
+		construction_ids = {int(value["id"]) for value in candidates if value.get("entry_type") == "construction"}
+		if consulted != morpheme_ids:
+			raise ValueError("translation did not audit every retrieved morpheme row")
+		if applied.intersection(rejected) or applied.union(rejected) != construction_ids:
+			raise ValueError("translation did not classify every retrieved construction row exactly once")
+		return translation
+
 	def _ground_lexical_ids(self, labels, schema_id):
 		grounded = []
 		for raw_label in labels[:12]:
@@ -156,7 +199,7 @@ class AnnotationAgentV7(AnnotationAgent):
 	def _has_dictionary_grounding(self, evidence_summary):
 		return any(entry.get("tool") == "ground_lexical_ids" for entry in evidence_summary)
 
-	def _finalize_translation_v7(self, base_input, evidence_summary, reason="evidence complete"):
+	def _finalize_translation_v7(self, base_input, evidence_summary, grammar_candidates, reason="evidence complete"):
 		if not self._has_dictionary_grounding(evidence_summary):
 			raise RuntimeError("translation-v7 cannot finalize without dictionary grounding")
 		final_input = list(base_input)
@@ -166,13 +209,13 @@ class AnnotationAgentV7(AnnotationAgent):
 		last_error = None
 		for attempt, budget in enumerate((1200, 1800), start=1):
 			self.progress("  translation-v7: forced finalization attempt {} (max_output_tokens={})".format(attempt, budget))
-			response = self._create_response(final_input, V7_TRANSLATION_INSTRUCTIONS, tools=[], max_output_tokens=budget, text_format=TRANSLATION_FORMAT)
+			response = self._create_response(final_input, V7_TRANSLATION_INSTRUCTIONS, tools=[], max_output_tokens=budget, text_format=V7_TRANSLATION_FORMAT)
 			incomplete_reason = _response_incomplete_reason(response)
 			if incomplete_reason:
 				last_error = RuntimeError("translation response incomplete: {}".format(incomplete_reason))
 				continue
 			try:
-				return parse_translation_json(response.output_text)
+				return self._validate_grammar_audit(parse_translation_json(response.output_text), grammar_candidates)
 			except (json.JSONDecodeError, ValueError) as error:
 				last_error = error
 		if last_error:
@@ -183,6 +226,7 @@ class AnnotationAgentV7(AnnotationAgent):
 		construction_candidates = self._construction_candidates(item, job, result)
 
 		def finish(translation):
+			self._validate_grammar_audit(translation, construction_candidates)
 			translation.setdefault("translation_evidence", {})["construction_candidates"] = construction_candidates
 			return translation
 
@@ -201,7 +245,7 @@ class AnnotationAgentV7(AnnotationAgent):
 				"enabled": True,
 				"candidate_count": len(construction_candidates),
 				"candidates": construction_candidates,
-				"instruction": "Morpheme rows apply on an exact trigger hit. Construction rows are candidates only and apply only when the full pattern fits the frozen annotation span; a matching construction specializes the morpheme rule.",
+				"instruction": "Consult every morpheme policy on its exact trigger hit without blind substitution. Classify every construction candidate as applied or rejected; apply it only when the full pattern fits the frozen annotation span.",
 			}
 		base_input = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 		evidence_summary = []
@@ -221,11 +265,11 @@ class AnnotationAgentV7(AnnotationAgent):
 					continue
 				incomplete_reason = _response_incomplete_reason(response)
 				if incomplete_reason:
-					return finish(self._finalize_translation_v7(base_input, evidence_summary, "previous response incomplete: {}".format(incomplete_reason)))
+					return finish(self._finalize_translation_v7(base_input, evidence_summary, construction_candidates, "previous response incomplete: {}".format(incomplete_reason)))
 				try:
-					translation = parse_translation_json(response.output_text)
+					translation = self._validate_grammar_audit(parse_translation_json(response.output_text), construction_candidates)
 				except (json.JSONDecodeError, ValueError):
-					return finish(self._finalize_translation_v7(base_input, evidence_summary, "previous final JSON malformed"))
+					return finish(self._finalize_translation_v7(base_input, evidence_summary, construction_candidates, "previous final JSON malformed or grammar audit incomplete"))
 				self.progress("  translation-v7: final confidence={:.3f}".format(translation["confidence"]))
 				return finish(translation)
 
@@ -253,7 +297,7 @@ class AnnotationAgentV7(AnnotationAgent):
 
 			self.progress("  translation-v7: continue after tool round {} (evidence {}/{})".format(round_index, evidence_calls, self.max_translation_evidence_calls))
 			if evidence_calls >= self.max_translation_evidence_calls:
-				return finish(self._finalize_translation_v7(base_input, evidence_summary, "translation evidence budget exhausted"))
+				return finish(self._finalize_translation_v7(base_input, evidence_summary, construction_candidates, "translation evidence budget exhausted"))
 			response = self._create_response(continuation, V7_TRANSLATION_INSTRUCTIONS, tools=tools, max_output_tokens=900)
 		raise RuntimeError("translation-v7 phase exceeded maximum tool rounds")
 
