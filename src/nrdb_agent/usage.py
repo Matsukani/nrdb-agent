@@ -48,6 +48,8 @@ def classify_stage(instructions):
 	text = str(instructions or "").lower()
 	if "grammatical-id analyst" in text:
 		return "id_analysis"
+	if "translation discrepancy critic" in text or "translation repair critic" in text:
+		return "translation_discrepancy"
 	if "semantic consistency reviewer" in text:
 		return "semantic_review"
 	if "japanese translation phase" in text:

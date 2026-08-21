@@ -4,6 +4,7 @@ import json
 from .asr_review import review_asr_predictions
 from .batch import export_job_results_tsv, process_dataset
 from .cli_output import TranslationProgress, WorkflowProgress, add_output_mode_args, output_mode_from_args, silent_translation_line
+from .discrepancy import check_discovery, create_discovery, run_discovery
 from .id_analysis import run_id_analysis_job, write_result_tsv
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
@@ -26,6 +27,16 @@ def _print_translation(value):
 	print("annotation:  {}".format(value.get("annotation", "")))
 	print("translation: {}".format(value.get("translation", "")))
 	print("confidence:  {} | decision: {}".format(value.get("confidence", ""), value.get("decision", "")))
+
+
+def _print_discrepancy_summary(label, value, output):
+	summary = value.get("summary") or {}
+	cost = "${:.4f}".format(float(summary.get("estimated_cost_usd") or 0.0)) if summary.get("pricing_complete") else "cost unknown"
+	print("{}: rows={} failed={} {} counts={}".format(label, summary.get("rows", 0), summary.get("failed", 0), cost, json.dumps(summary.get("counts") or {}, ensure_ascii=False)))
+	candidates = summary.get("morphemes_to_analyse") or []
+	if candidates:
+		print("morphemes to analyse: {}".format(", ".join("{} ({})".format(row["morph_id"], row["attributed_errors"]) for row in candidates)))
+	print("wrote {}".format(output))
 
 
 def _print_asr_review(value):
@@ -348,6 +359,29 @@ def main():
 	translate.add_argument("--json", action="store_true")
 	add_output_mode_args(translate)
 
+	discrepancy_create = sub.add_parser("discrepancy-create", help="Freeze a translated gold cohort containing selected morpheme IDs")
+	discrepancy_create.add_argument("ids", nargs="+", help="Exact atomic annotation IDs; quote shell metacharacters such as 'ppt>2'")
+	discrepancy_create.add_argument("--dataset-id", dest="dataset_ids", action="append", type=int, required=True)
+	discrepancy_create.add_argument("--annotation-schema", dest="annotation_schema_id", type=int, required=True)
+	discrepancy_create.add_argument("--region", required=True)
+	discrepancy_create.add_argument("--limit", type=_positive_count, default=100)
+	discrepancy_create.add_argument("--seed", type=int, default=1)
+	discrepancy_create.add_argument("--min-morphemes", type=_positive_count, default=1)
+	discrepancy_create.add_argument("--require-all", action="store_true", help="Require every requested ID; default matches any requested ID")
+	discrepancy_create.add_argument("--output", required=True, help="Write the frozen discovery cohort JSON")
+
+	discrepancy_run = sub.add_parser("discrepancy-run", help="Generate blind translations and judge them against gold")
+	discrepancy_run.add_argument("discovery")
+	discrepancy_run.add_argument("--translation-model", default="gpt-5.6-luna", help="Model that generates blind translations")
+	discrepancy_run.add_argument("--discrepancy-model", default="gpt-5.6-terra", help="Model that judges semantic discrepancies")
+	discrepancy_run.add_argument("--output", required=True, help="Write baseline translations and judgments JSON")
+
+	discrepancy_check = sub.add_parser("discrepancy-check", help="Rerun the frozen baseline cohort with grammatical constructions")
+	discrepancy_check.add_argument("baseline")
+	discrepancy_check.add_argument("--translation-model", default=None, help="Must match the baseline generation model; defaults to it")
+	discrepancy_check.add_argument("--discrepancy-model", default="gpt-5.6-terra", help="Model that judges repair versus regression")
+	discrepancy_check.add_argument("--output", required=True, help="Write construction-assisted translations and repair judgments JSON")
+
 	asr_review = sub.add_parser("asr-review", help="Blindly rerank ASR n-best hypotheses with NRDB linguistic evidence")
 	asr_review.add_argument("predictions")
 	asr_review.add_argument("--out-dir", required=True)
@@ -482,6 +516,25 @@ def main():
 				display.stop()
 			if mode in {"silent", "compact"}: print(silent_translation_line(value))
 			else: _print_translation(value)
+	elif args.command == "discrepancy-create":
+		value = create_discovery(
+			nrdb, args.ids, args.dataset_ids, args.annotation_schema_id, args.region,
+			limit=args.limit, seed=args.seed, min_morphemes=args.min_morphemes,
+			require_all=args.require_all, output=args.output,
+		)
+		print("created {} frozen row(s) from {} eligible rows: {}".format(len(value["rows"]), value["selection"]["eligible_pool_size"], args.output))
+	elif args.command == "discrepancy-run":
+		value = run_discovery(
+			nrdb, args.discovery, args.output, translation_model=args.translation_model,
+			discrepancy_model=args.discrepancy_model,
+		)
+		_print_discrepancy_summary("baseline complete", value, args.output)
+	elif args.command == "discrepancy-check":
+		value = check_discovery(
+			nrdb, args.baseline, args.output, translation_model=args.translation_model,
+			discrepancy_model=args.discrepancy_model,
+		)
+		_print_discrepancy_summary("repair check complete", value, args.output)
 	elif args.command == "asr-review":
 		value = review_asr_predictions(nrdb, args.predictions, args.out_dir, args.annotation_schema_id, args.region, args.dialect_id, model_name=args.model, id_model_path=args.id_model, surface_model_path=args.surface_model, phrase_boundary_model_path=args.phrase_boundary_model, limit=args.limit, max_candidates=args.max_candidates, use_llm=not args.no_llm)
 		_print_json(value) if args.json else _print_asr_review(value)
