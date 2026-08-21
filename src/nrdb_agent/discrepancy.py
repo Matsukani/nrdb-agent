@@ -104,9 +104,8 @@ def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region
 	target_ids = list(dict.fromkeys(str(value).strip() for value in target_ids if str(value).strip()))
 	if not target_ids:
 		raise ValueError("at least one target morpheme ID is required")
-	if not dataset_ids:
-		raise ValueError("at least one dataset ID is required")
-	rows = nrdb.morph_eval_rows(dataset_ids)
+	dataset_ids = sorted({int(value) for value in (dataset_ids or [])})
+	rows = nrdb.morph_eval_rows(dataset_ids, annotation_schema_id=annotation_schema_id, region=region)
 	eligible = []
 	for row in rows:
 		if int(row.get("annotation_schema_id") or 0) != int(annotation_schema_id):
@@ -135,7 +134,7 @@ def create_discovery(nrdb, target_ids, dataset_ids, annotation_schema_id, region
 	payload = {
 		"format": DISCOVERY_FORMAT,
 		"selection": {
-			"target_ids": target_ids, "dataset_ids": sorted({int(value) for value in dataset_ids}),
+			"target_ids": target_ids, "dataset_ids": dataset_ids,
 			"annotation_schema_id": int(annotation_schema_id), "region": str(region),
 			"limit": int(limit), "seed": int(seed), "min_morphemes": int(min_morphemes),
 			"match": "all" if require_all else "any", "eligible_pool_size": pool_size,

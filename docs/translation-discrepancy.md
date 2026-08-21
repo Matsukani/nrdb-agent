@@ -6,18 +6,26 @@ The artifacts are local JSON files. They do not modify NRDB, the gold corpus, or
 
 ## 1. Freeze a discovery cohort
 
-The default selection matches any requested exact morpheme ID. `--require-all` requires every requested ID. Only rows with a gold Japanese translation are eligible.
+The default selection matches any requested exact morpheme ID. `--require-all` requires every requested ID. Only rows with a gold Japanese translation are eligible. With no `--dataset-id`, the cohort pools every sentence, text, and `lxs` row matching `--annotation-schema` and `--region`.
 
 ```bash
 nrdb-agent discrepancy-create adv foc 'ppt>2' \
-	--dataset-id 30 \
-	--dataset-id 31 \
 	--annotation-schema 2 \
 	--region 宮古 \
 	--limit 50 \
 	--min-morphemes 4 \
 	--seed 42 \
 	--output discovery.json
+```
+
+Dataset scope is optional. One option accepts several IDs, and the option may also be repeated:
+
+```bash
+--dataset-id 21 29 31 28 30
+```
+
+```bash
+--dataset-id 21 29 --dataset-id 31 28 30
 ```
 
 Selection uses the human gold annotation, but generation never receives the gold translation. The frozen artifact records the sampled sentence identities and complete evaluation inputs.

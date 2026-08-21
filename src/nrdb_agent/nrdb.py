@@ -160,10 +160,11 @@ class NrdbClient:
 			raise RuntimeError(payload.get("error") or "NRDB agent results API failed")
 		return payload
 
-	def morph_eval_rows(self, dataset_ids, page_size=500, text_internal_id=None):
-		dataset_ids = sorted({int(value) for value in dataset_ids})
-		if not dataset_ids:
-			return []
+	def morph_eval_rows(self, dataset_ids=None, page_size=500, text_internal_id=None, annotation_schema_id=None, region=None):
+		dataset_ids = sorted({int(value) for value in (dataset_ids or [])})
+		region = str(region or "").strip()
+		if not dataset_ids and (annotation_schema_id in (None, "") or not region):
+			raise ValueError("morph evaluation without dataset IDs requires annotation_schema_id and region")
 		if text_internal_id is not None and len(dataset_ids) != 1:
 			raise ValueError("text_internal_id requires exactly one dataset ID")
 		rows = []
@@ -173,6 +174,10 @@ class NrdbClient:
 				"dataset_ids": ",".join(str(value) for value in dataset_ids),
 				"after_id": int(after_id), "limit": int(page_size),
 			}
+			if annotation_schema_id not in (None, ""):
+				params["annotation_schema_id"] = int(annotation_schema_id)
+			if region:
+				params["region"] = region
 			if text_internal_id is not None:
 				params["text_internal_id"] = int(text_internal_id)
 			payload = self.http.get(self.morph_eval_url, params)

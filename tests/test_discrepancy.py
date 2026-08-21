@@ -6,8 +6,10 @@ from nrdb_agent import discrepancy
 
 
 class FakeNrdb:
-	def morph_eval_rows(self, dataset_ids):
-		assert dataset_ids == [30]
+	def morph_eval_rows(self, dataset_ids, annotation_schema_id=None, region=None):
+		assert dataset_ids in ([], [30])
+		assert annotation_schema_id == 2
+		assert region == "宮古"
 		return [
 			{
 				"sentence_id": 1, "dataset_id": 30, "example_id": "a", "dialect_id": 19,
@@ -51,6 +53,15 @@ def test_create_discovery_filters_gold_translations_ids_and_morpheme_count(tmp_p
 	assert [row["sentence_id"] for row in result["rows"]] == [1]
 	assert result["rows"][0]["matched_target_ids"] == ["adv"]
 	assert json.loads(output.read_text(encoding="utf-8"))["format"] == discrepancy.DISCOVERY_FORMAT
+
+
+def test_create_discovery_pools_region_and_schema_when_datasets_are_omitted(tmp_path):
+	result = discrepancy.create_discovery(
+		FakeNrdb(), ["adv"], None, 2, "宮古", limit=10,
+		output=tmp_path / "cohort.json",
+	)
+	assert result["selection"]["dataset_ids"] == []
+	assert [row["sentence_id"] for row in result["rows"]] == [1]
 
 
 def test_run_and_check_keep_translation_and_judge_models_separate(tmp_path, monkeypatch):

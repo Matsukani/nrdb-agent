@@ -361,7 +361,7 @@ def main():
 
 	discrepancy_create = sub.add_parser("discrepancy-create", help="Freeze a translated gold cohort containing selected morpheme IDs")
 	discrepancy_create.add_argument("ids", nargs="+", help="Exact atomic annotation IDs; quote shell metacharacters such as 'ppt>2'")
-	discrepancy_create.add_argument("--dataset-id", dest="dataset_ids", action="append", type=int, required=True)
+	discrepancy_create.add_argument("--dataset-id", dest="dataset_ids", action="extend", nargs="+", type=int, default=None, help="Optional dataset restriction; accept one or more IDs and may be repeated")
 	discrepancy_create.add_argument("--annotation-schema", dest="annotation_schema_id", type=int, required=True)
 	discrepancy_create.add_argument("--region", required=True)
 	discrepancy_create.add_argument("--limit", type=_positive_count, default=100)
