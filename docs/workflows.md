@@ -90,6 +90,10 @@ Produce Japanese from morphology.
 - `--morphology-source auto`: use existing morphology when present; otherwise predict it;
 - `--morphology-source predict`: always infer morphology before translation.
 
+For the one-line `translate` adapter, supply frozen morphology with `--segmented '...'
+--annotation '...'` when selecting `existing`; `auto` uses the pair when supplied and
+otherwise predicts. Registered jobs and portable datasets read these values from their rows.
+
 `--nrdb-evidence enabled` is the default and exposes the applicable NRDB dictionary,
 corpus, construction, and licensed-form evidence. `--nrdb-evidence none` removes those
 linguistic evidence tools while retaining operational APIs (job storage, the morphology

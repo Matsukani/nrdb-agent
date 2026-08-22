@@ -349,6 +349,8 @@ def main():
 	translate.add_argument("--licensed", action="store_true", help="Use grammar-licensed generated forms as forward morphology evidence")
 	translate.add_argument("--nrdb-evidence", choices=["none", "enabled"], default="enabled", help="Enable or disable NRDB dictionary, corpus, construction, and licensed-form evidence")
 	translate.add_argument("--morphology-source", choices=["none", "predict", "existing", "auto"], default="predict", help="Miyako -> Japanese morphology source")
+	translate.add_argument("--segmented", dest="fixed_segmented", default=None, help="Frozen segmentation for --morphology-source existing/auto")
+	translate.add_argument("--annotation", dest="fixed_annotation", default=None, help="Frozen morphemic annotation for --morphology-source existing/auto")
 	translate.add_argument("--existing-translation", default=None, help="Existing Japanese translation used only when semantic feedback is existing/auto; never exposed to output generation")
 	_add_forward_morph_args(translate)
 	translate.add_argument("--model", default="gpt-5.6")
@@ -500,7 +502,12 @@ def main():
 		if args.target == "miyako" and not args.dialects: parser.error("Japanese -> Miyako translation requires --dialects ID1,ID2,...")
 		if args.json and _explicit_output_mode(args): parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
 		semantic_feedback = args.semantic_feedback
-		if semantic_feedback is None: semantic_feedback = "generated" if args.target == "japanese" and args.morphology_source != "none" else "none"
+		if semantic_feedback is None:
+			semantic_feedback = "generated" if args.target == "japanese" and args.morphology_source in {"predict", "auto"} and not args.fixed_segmented else "none"
+		if bool(args.fixed_segmented) != bool(args.fixed_annotation): parser.error("--segmented and --annotation must be supplied together")
+		if args.target == "miyako" and (args.fixed_segmented or args.fixed_annotation): parser.error("--segmented and --annotation apply only to Miyako -> Japanese translation")
+		if args.target == "japanese" and args.morphology_source == "existing" and not args.fixed_segmented: parser.error("--morphology-source existing requires --segmented and --annotation")
+		if args.target == "japanese" and args.fixed_segmented and args.morphology_source not in {"existing", "auto"}: parser.error("--segmented and --annotation require --morphology-source existing or auto")
 		if args.target == "miyako" and (semantic_feedback != "none" or args.require_semantic_feedback or args.existing_translation or args.constructions or args.licensed):
 			parser.error("semantic feedback, constructions and licensed forms are only applicable to direct Miyako -> Japanese translation")
 		validation_task = "reverse" if args.target == "miyako" else ("translate" if args.morphology_source == "none" else "morph-translate")
@@ -522,6 +529,7 @@ def main():
 			semantic_feedback=semantic_feedback, require_semantic_feedback=args.require_semantic_feedback,
 			use_constructions=args.constructions, use_licensed_forms=args.licensed,
 			nrdb_evidence=args.nrdb_evidence, morphology_source=args.morphology_source,
+			fixed_segmented=args.fixed_segmented, fixed_annotation=args.fixed_annotation,
 			existing_translation=args.existing_translation,
 		)
 		if args.json:
