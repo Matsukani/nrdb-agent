@@ -197,7 +197,7 @@ class AnnotationAgentV7(AnnotationAgent):
 		return _trace_result(name, result)
 
 	def _has_dictionary_grounding(self, evidence_summary):
-		return any(entry.get("tool") == "ground_lexical_ids" for entry in evidence_summary)
+		return not getattr(self, "_nrdb_evidence_enabled", True) or any(entry.get("tool") == "ground_lexical_ids" for entry in evidence_summary)
 
 	def _finalize_translation_v7(self, base_input, evidence_summary, grammar_candidates, reason="evidence complete"):
 		if not self._has_dictionary_grounding(evidence_summary):
@@ -223,11 +223,13 @@ class AnnotationAgentV7(AnnotationAgent):
 		raise RuntimeError("translation-v7 finalization failed")
 
 	def _translate_frozen_v7(self, item, job, result):
+		self._nrdb_evidence_enabled = str(job.get("nrdb_evidence") or "enabled") == "enabled"
 		construction_candidates = self._construction_candidates(item, job, result)
 
 		def finish(translation):
 			self._validate_grammar_audit(translation, construction_candidates)
 			translation.setdefault("translation_evidence", {})["construction_candidates"] = construction_candidates
+			translation["translation_evidence"]["nrdb_evidence"] = "enabled" if self._nrdb_evidence_enabled else "none"
 			return translation
 
 		payload = {
@@ -239,7 +241,13 @@ class AnnotationAgentV7(AnnotationAgent):
 			"annotation_decision": result["decision"],
 			"annotation_confidence": result["confidence"],
 			"annotation_schema_id": int(job["annotation_schema_id"]),
+			"nrdb_evidence": "enabled" if self._nrdb_evidence_enabled else "none",
+			"morphology_source": str(job.get("morphology_source") or "predict"),
 		}
+		if not self._nrdb_evidence_enabled:
+			payload["evidence_policy"] = "NRDB dictionary, corpus, construction, and licensed-form evidence is disabled. Do not claim that any lexical or grammatical choice was retrieved from NRDB."
+		if str(job.get("morphology_source") or "predict") == "none":
+			payload["raw_translation_policy"] = "No segmentation or morphemic annotation is available. Translate the raw Miyako source directly and leave all morphology-dependent audit arrays empty."
 		if job.get("use_constructions"):
 			payload["construction_evidence"] = {
 				"enabled": True,
@@ -250,8 +258,9 @@ class AnnotationAgentV7(AnnotationAgent):
 		base_input = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 		evidence_summary = []
 		evidence_calls = 0
-		tools = self._v7_translation_tools()
-		self.progress("  translation-v7: initial response (dictionary-grounded; budget {}/{})".format(evidence_calls, self.max_translation_evidence_calls))
+		tools = self._v7_translation_tools() if self._nrdb_evidence_enabled else []
+		mode = "dictionary-grounded" if self._nrdb_evidence_enabled else "NRDB evidence disabled"
+		self.progress("  translation-v7: initial response ({}; budget {}/{})".format(mode, evidence_calls, self.max_translation_evidence_calls))
 		response = self._create_response(base_input, V7_TRANSLATION_INSTRUCTIONS, tools=tools, max_output_tokens=900)
 		for round_index in range(1, self.max_rounds + 1):
 			calls = [output for output in response.output if getattr(output, "type", None) == "function_call"]
@@ -271,6 +280,7 @@ class AnnotationAgentV7(AnnotationAgent):
 				except (json.JSONDecodeError, ValueError):
 					return finish(self._finalize_translation_v7(base_input, evidence_summary, construction_candidates, "previous final JSON malformed or grammar audit incomplete"))
 				self.progress("  translation-v7: final confidence={:.3f}".format(translation["confidence"]))
+				translation.setdefault("translation_evidence", {})["nrdb_evidence"] = "enabled" if self._nrdb_evidence_enabled else "none"
 				return finish(translation)
 
 			self.progress("  translation-v7 tool round {}: {} call(s)".format(round_index, len(calls)))

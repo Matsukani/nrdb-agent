@@ -11,7 +11,8 @@ from .usage import UsageTracker, tracked_client
 
 
 TASKS = {"morph", "translate", "morph-translate", "reverse"}
-MORPHOLOGY_SOURCES = {"predict", "existing", "auto"}
+MORPHOLOGY_SOURCES = {"none", "predict", "existing", "auto"}
+NRDB_EVIDENCE_MODES = {"none", "enabled"}
 EXECUTION_JSON_ATTEMPTS = 3
 
 
@@ -66,10 +67,20 @@ class ExecutionRequest:
 	require_semantic_feedback: bool = False
 	use_constructions: bool = False
 	use_licensed_forms: bool = False
+	nrdb_evidence: str = "enabled"
 	morphology_source: str = "predict"
 	target_dialect_ids: tuple[int, ...] | None = None
 	morph_policy: ForwardMorphPolicy | None = None
 	predicted_morphology: dict | None = None
+
+	def __post_init__(self):
+		validate_execution_configuration(
+			task=self.task, morphology_source=self.morphology_source,
+			nrdb_evidence=self.nrdb_evidence, semantic_feedback=self.semantic_feedback,
+			require_semantic_feedback=self.require_semantic_feedback,
+			use_constructions=self.use_constructions, use_licensed_forms=self.use_licensed_forms,
+			morph_policy=self.morph_policy, predicted_morphology=self.predicted_morphology,
+		)
 
 	def manifest(self):
 		return {
@@ -83,6 +94,7 @@ class ExecutionRequest:
 			"require_semantic_feedback": bool(self.require_semantic_feedback),
 			"use_constructions": bool(self.use_constructions),
 			"use_licensed_forms": bool(self.use_licensed_forms),
+			"nrdb_evidence": self.nrdb_evidence,
 			"morphology_source": self.morphology_source,
 			"target_dialect_ids": list(self.target_dialect_ids or []),
 			"forward_morph_policy": self.morph_policy.manifest() if self.morph_policy else None,
@@ -98,6 +110,7 @@ class ExecutionRequest:
 			raise ValueError("execution request item must be an object")
 		task = str(value.get("task") or "")
 		morphology_source = str(value.get("morphology_source") or "predict")
+		nrdb_evidence = str(value.get("nrdb_evidence") or "enabled")
 		policy_value = value.get("forward_morph_policy")
 		policy = policy_from_manifest(policy_value).validate(morphology_source=morphology_source, task=task) if policy_value else None
 		return cls(
@@ -106,6 +119,7 @@ class ExecutionRequest:
 			semantic_feedback=value.get("semantic_feedback"),
 			require_semantic_feedback=bool(value.get("require_semantic_feedback")),
 			use_constructions=bool(value.get("use_constructions")), use_licensed_forms=bool(value.get("use_licensed_forms")),
+			nrdb_evidence=nrdb_evidence,
 			morphology_source=morphology_source,
 			target_dialect_ids=tuple(int(item) for item in (value.get("target_dialect_ids") or [])) or None,
 			morph_policy=policy,
@@ -121,6 +135,7 @@ def execute_request(nrdb, request, openai_client=None, progress=print):
 		model_name=request.model_name, semantic_feedback=request.semantic_feedback,
 		require_semantic_feedback=request.require_semantic_feedback,
 		use_constructions=request.use_constructions, use_licensed_forms=request.use_licensed_forms,
+		nrdb_evidence=request.nrdb_evidence,
 		morphology_source=request.morphology_source, target_dialect_ids=request.target_dialect_ids,
 		morph_policy=request.morph_policy, predicted_morphology=request.predicted_morphology,
 		openai_client=openai_client, progress=progress,
@@ -132,18 +147,51 @@ def execute_request(nrdb, request, openai_client=None, progress=print):
 	}
 
 
+def validate_execution_configuration(task, morphology_source="predict", nrdb_evidence="enabled",
+	semantic_feedback="none", require_semantic_feedback=False, use_constructions=False,
+	use_licensed_forms=False, morph_policy=None, predicted_morphology=None):
+	task = str(task or "morph")
+	source = str(morphology_source or "predict")
+	evidence = str(nrdb_evidence or "enabled")
+	semantic = str(semantic_feedback or "none")
+	if task not in TASKS: raise ValueError("invalid task: {}".format(task))
+	if source not in MORPHOLOGY_SOURCES: raise ValueError("invalid morphology_source: {}".format(source))
+	if evidence not in NRDB_EVIDENCE_MODES: raise ValueError("invalid nrdb_evidence: {}".format(evidence))
+	if evidence == "none" and (use_constructions or use_licensed_forms):
+		raise ValueError("--constructions and --licensed require --nrdb-evidence enabled")
+	if task == "reverse" and evidence == "none":
+		raise ValueError("nrdb_evidence=none is not supported for reverse realization")
+	if source == "none":
+		if task != "translate":
+			raise ValueError("morphology_source=none is valid only for translation-only tasks")
+		if semantic != "none" or require_semantic_feedback:
+			raise ValueError("morphology_source=none cannot use morphology semantic feedback")
+		if use_constructions or use_licensed_forms:
+			raise ValueError("morphology_source=none cannot use constructions or licensed morphology")
+		if predicted_morphology:
+			raise ValueError("morphology_source=none cannot receive predicted morphology")
+	if predicted_morphology and source != "predict":
+		raise ValueError("predicted_morphology requires morphology_source=predict")
+	if morph_policy is not None:
+		morph_policy.validate(morphology_source=source, task=task)
+	return True
+
+
 def _execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gpt-5.6",
 	semantic_feedback=None, require_semantic_feedback=False, use_constructions=False,
-	use_licensed_forms=False, morphology_source="predict", target_dialect_ids=None,
-	morph_review="agent", resegmentation=False, max_segmentation_candidates=4,
+	use_licensed_forms=False, nrdb_evidence="enabled", morphology_source="predict", target_dialect_ids=None,
+	morph_review=None, resegmentation=False, max_segmentation_candidates=4,
 	id_model=None, surface_model=None, morph_policy=None, predicted_morphology=None, openai_client=None, progress=print):
 	task = str(task or "morph")
 	morphology_source = str(morphology_source or "predict")
+	nrdb_evidence = str(nrdb_evidence or "enabled")
 	use_constructions = bool(use_constructions)
 	use_licensed_forms = bool(use_licensed_forms)
 	semantic_feedback, require_semantic_feedback = _semantic_feedback(semantic_feedback, require_semantic_feedback)
-	if task not in TASKS: raise ValueError("invalid task: {}".format(task))
-	if morphology_source not in MORPHOLOGY_SOURCES: raise ValueError("invalid morphology_source: {}".format(morphology_source))
+	validate_execution_configuration(
+		task, morphology_source, nrdb_evidence, semantic_feedback, require_semantic_feedback,
+		use_constructions, use_licensed_forms, morph_policy, predicted_morphology,
+	)
 
 	annotation_schema_id = int(annotation_schema_id)
 	dialect_id = int(item.get("dialect_id") or item.get("target_dialect_id") or 0)
@@ -182,7 +230,7 @@ def _execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gp
 	policy = morph_policy or forward_morph_policy(
 		review=morph_review, resegmentation=resegmentation, id_model=id_model, surface_model=surface_model,
 		max_segmentation_candidates=max_segmentation_candidates,
-		morphology_source="existing" if use_existing else "predict", task=task,
+		morphology_source="existing" if use_existing else morphology_source, task=task,
 	)
 	if not policy.agent_review and semantic_feedback != "none":
 		raise ValueError("semantic feedback requires --morph-review agent")
@@ -199,12 +247,29 @@ def _execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gp
 		"prompt_version": "annotation-v9", "task": task,
 		"semantic_feedback": semantic_feedback, "require_semantic_feedback": require_semantic_feedback,
 		"use_constructions": use_constructions, "use_licensed_forms": use_licensed_forms,
+		"nrdb_evidence": nrdb_evidence,
 		"morphology_source": morphology_source, "produce_translation": task in {"translate", "morph-translate"},
 		"blind_translation": False,
 	}
 	agent_class = LicensedTaskAwareAnnotationAgent if use_licensed_forms else TaskAwareAnnotationAgent
 	agent = agent_class(nrdb, model_name, client=client, progress=progress, morph_policy=policy)
 	morph_baseline = None
+
+	if morphology_source == "none":
+		progress("  morph: disabled")
+		result = _call_with_json_retry(
+			lambda: agent.translate_frozen(forward_item, job, "", ""), progress, "raw translation",
+		)
+		usage = tracker.summary()
+		return {
+			"source": text, "segmented": "", "annotation": "", "translation": result.get("trsl_ai", ""),
+			"decision": result.get("decision"), "confidence": result.get("confidence"),
+			"evidence": result.get("evidence", {}), "api_usage": usage,
+			"estimated_cost_usd": _usage_cost(usage), "model": model_name,
+			"semantic_feedback": semantic_feedback, "nrdb_evidence": nrdb_evidence,
+			"use_constructions": False, "use_licensed_forms": False, "morph_baseline": None,
+			"forward_morph_policy": policy.manifest(),
+		}
 
 	if use_existing:
 		morph_baseline = {"source": "existing", "segmented": segmented, "annotation": annotation, "inference": {}}
@@ -235,6 +300,7 @@ def _execute_item(nrdb, item, task, annotation_schema_id, region, model_name="gp
 		"confidence": result.get("confidence"), "evidence": result.get("evidence", {}),
 		"api_usage": usage, "estimated_cost_usd": _usage_cost(usage), "model": model_name,
 		"semantic_feedback": semantic_feedback, "use_constructions": use_constructions,
+		"nrdb_evidence": nrdb_evidence,
 		"use_licensed_forms": use_licensed_forms, "morph_baseline": morph_baseline,
 		"forward_morph_policy": policy.manifest(),
 	}

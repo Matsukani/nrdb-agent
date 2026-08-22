@@ -50,7 +50,10 @@ class ForwardMorphPolicy:
 		return self.review == "agent"
 
 	def validate(self, morphology_source="predict", task="morph"):
-		frozen = str(morphology_source or "predict") in {"existing", "gold"}
+		source = str(morphology_source or "predict")
+		frozen = source in {"existing", "gold"}
+		if source == "none" and self.agent_review:
+			raise ValueError("morphology_source=none requires --morph-review none")
 		if frozen and self.resegmentation:
 			raise ValueError("--resegmentation cannot be used with gold/existing morphology")
 		if frozen and (self.id_model_path or self.surface_model_path):
@@ -68,10 +71,11 @@ class ForwardMorphPolicy:
 		return json.dumps(self.manifest(), ensure_ascii=False, separators=(",", ":"))
 
 
-def forward_morph_policy(review="agent", resegmentation=False, id_model=None, surface_model=None,
+def forward_morph_policy(review=None, resegmentation=False, id_model=None, surface_model=None,
 	max_segmentation_candidates=4, morphology_source="predict", task="morph"):
+	review = review or ("none" if str(morphology_source or "predict") == "none" else "agent")
 	return ForwardMorphPolicy(
-		review=str(review or "agent"), resegmentation=bool(resegmentation),
+		review=str(review), resegmentation=bool(resegmentation),
 		id_model_path=str(id_model) if id_model else None,
 		surface_model_path=str(surface_model) if surface_model else None,
 		max_segmentation_candidates=int(max_segmentation_candidates),

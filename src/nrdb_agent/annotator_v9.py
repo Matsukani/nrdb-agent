@@ -441,6 +441,7 @@ class AnnotationAgentV9(AnnotationAgentV8):
 		return result
 
 	def _annotation_phase_v9(self, item, job, morph_result):
+		self._nrdb_evidence_enabled = str(job.get("nrdb_evidence") or "enabled") == "enabled"
 		self.morph_policy = self._active_morph_policy()
 		self._segmentation_test_used = False
 		self._tested_segmentations = set()
@@ -488,8 +489,13 @@ class AnnotationAgentV9(AnnotationAgentV8):
 		evidence_summary = []
 		evidence_calls = 0
 		self.progress("  llm: initial response ({}; annotation-v9)".format(self.model_name))
-		tools = V9_TOOLS if self._allow_segmentation_tests else V9_BASE_TOOLS
+		if self._nrdb_evidence_enabled:
+			tools = V9_TOOLS if self._allow_segmentation_tests else V9_BASE_TOOLS
+		else:
+			tools = [_tool("validate_analysis")] + ([TEST_SEGMENTATIONS_TOOL] if self._allow_segmentation_tests else [])
 		instructions = V9_INSTRUCTIONS + (V9_RESEGMENTATION_RULES if self._allow_segmentation_tests else "\nSegmentation boundaries are frozen. Do not alter them.\n")
+		if not self._nrdb_evidence_enabled:
+			instructions += "\nNRDB linguistic evidence is disabled. Do not request or claim dictionary, corpus, construction, or licensed-form support. Structural validation and explicitly enabled model critics remain available.\n"
 		response = self._create_response(base_input, instructions, tools=tools)
 		for round_index in range(1, self.max_rounds + 1):
 			calls = [output for output in response.output if getattr(output, "type", None) == "function_call"]
@@ -580,7 +586,12 @@ class AnnotationAgentV9(AnnotationAgentV8):
 			"shared_evidence": self._shared_evidence_compact(),
 		}
 		base_input = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
-		response = self._create_response(base_input, V9_REVIEW_INSTRUCTIONS, tools=V9_REVIEW_TOOLS, max_output_tokens=1200, text_format=REVIEW_FORMAT)
+		evidence_enabled = str(job.get("nrdb_evidence") or "enabled") == "enabled"
+		tools = V9_REVIEW_TOOLS if evidence_enabled else []
+		instructions = V9_REVIEW_INSTRUCTIONS
+		if not evidence_enabled:
+			instructions += "\nNRDB linguistic evidence is disabled. Review only the supplied source, morphology, and translation; do not claim retrieved evidence.\n"
+		response = self._create_response(base_input, instructions, tools=tools, max_output_tokens=1200, text_format=REVIEW_FORMAT)
 		for round_index in range(1, self.max_review_rounds + 1):
 			calls = [output for output in response.output if getattr(output, "type", None) == "function_call"]
 			if not calls:
@@ -595,5 +606,5 @@ class AnnotationAgentV9(AnnotationAgentV8):
 					tool_result = self._v8_review_tool_result(call.name, arguments, item, int(job["annotation_schema_id"]))
 					compact = self._compact_review_result(call.name, tool_result)
 				continuation.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(compact, ensure_ascii=False)})
-			response = self._create_response(continuation, V9_REVIEW_INSTRUCTIONS, tools=V9_REVIEW_TOOLS, max_output_tokens=1200, text_format=REVIEW_FORMAT)
+			response = self._create_response(continuation, instructions, tools=tools, max_output_tokens=1200, text_format=REVIEW_FORMAT)
 		return self._force_review_finalization(base_input, result, "v9 review tool budget exhausted")

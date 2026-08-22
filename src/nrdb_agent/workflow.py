@@ -69,6 +69,7 @@ def run_workflow_job(nrdb, job_id, max_items=None, progress=print, target_dialec
 				semantic_feedback=job.get("semantic_feedback") or "none",
 				require_semantic_feedback=bool(job.get("require_semantic_feedback")),
 				use_constructions=bool(job.get("use_constructions")), use_licensed_forms=bool(job.get("use_licensed_forms")),
+				nrdb_evidence=job.get("nrdb_evidence") or "enabled",
 				morphology_source=job.get("morphology_source") or "predict",
 				target_dialect_ids=tuple(int(value) for value in target_dialects) if target_dialects else None,
 				morph_policy=policy,

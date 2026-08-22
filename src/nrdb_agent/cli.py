@@ -6,7 +6,7 @@ from pathlib import Path
 from .asr_review import review_asr_predictions
 from .batch import export_job_results_tsv, process_dataset
 from .cli_output import TranslationProgress, WorkflowProgress, add_output_mode_args, output_mode_from_args, silent_translation_line
-from .execution import ExecutionRequest, execute_request
+from .execution import ExecutionRequest, execute_request, validate_execution_configuration
 from .id_analysis import licensed_candidate_tsv, run_id_analysis_job, write_result_tsv
 from .metrics import annotation_metrics, job_annotation_metrics, job_segmentation_metrics, segmentation_metrics
 from .nrdb import NrdbClient
@@ -19,7 +19,7 @@ SEMANTIC_FEEDBACK_CHOICES = ["none", "generated", "existing", "auto"]
 
 
 def _add_forward_morph_args(parser):
-	parser.add_argument("--morph-review", choices=["none", "agent"], default="agent", help="Keep the deployed morph baseline or run agent morphology review")
+	parser.add_argument("--morph-review", choices=["none", "agent"], default=None, help="Keep the deployed morph baseline or run agent morphology review (default: agent, or none when morphology is disabled)")
 	parser.add_argument("--resegmentation", action="store_true", help="Explicitly allow one bounded fixed-segmentation probe batch")
 	parser.add_argument("--max-segmentation-candidates", type=int, default=4, help="Maximum alternatives in the single segmentation-probe batch")
 	parser.add_argument("--id-model", default=None, help="Explicit nrdb-morph ID-sequence critic path")
@@ -180,7 +180,7 @@ def _print_jobs(jobs, short=False):
 		print("#{}  {}  dataset {}{}  task={}  model={}".format(job_id, status, dataset_id, " ({})".format(dataset_name) if dataset_name else "", task, model))
 		print("  limit={} seed={} scope={} created={}".format(limit, job.get("selection_seed") or "?", _job_scope_text(job), created or "?"))
 		if job.get("morphology_source") or job.get("semantic_feedback") or job.get("needs_filter"):
-			print("  morphology={} semantic_feedback={} constructions={} licensed={} needs={}".format(job.get("morphology_source") or "-", job.get("semantic_feedback") or "-", "on" if job.get("use_constructions") else "off", "on" if job.get("use_licensed_forms") else "off", job.get("needs_filter") or "-"))
+			print("  morphology={} nrdb_evidence={} semantic_feedback={} constructions={} licensed={} needs={}".format(job.get("morphology_source") or "-", job.get("nrdb_evidence") or "enabled", job.get("semantic_feedback") or "-", "on" if job.get("use_constructions") else "off", "on" if job.get("use_licensed_forms") else "off", job.get("needs_filter") or "-"))
 
 
 def _print_results(payload, show_sentences=0):
@@ -293,7 +293,8 @@ def main():
 	create.add_argument("--require-semantic-feedback", action="store_true", help="Fail rows when the selected semantic-feedback source cannot be supplied")
 	create.add_argument("--constructions", action="store_true", help="Use curated NRDB constructional evidence during Japanese translation")
 	create.add_argument("--licensed", action="store_true", help="Use grammar-licensed generated forms as forward morphology evidence")
-	create.add_argument("--morphology-source", choices=["predict", "existing", "auto"], default="predict", help="Predict morphology, freeze existing morphology, or use existing when available")
+	create.add_argument("--nrdb-evidence", choices=["none", "enabled"], default="enabled", help="Enable or disable NRDB dictionary, corpus, construction, and licensed-form evidence")
+	create.add_argument("--morphology-source", choices=["none", "predict", "existing", "auto"], default="predict", help="Disable morphology, predict it, freeze existing morphology, or use existing when available")
 	create.add_argument("--needs", choices=["any", "annotation", "translation", "either", "both"], default="any", help="Select rows missing annotation, translation, either, both, or no missingness filter")
 	create.add_argument("--text-id", type=int, default=None, help="Restrict a text dataset to one internal text_id")
 	create.add_argument("--sentence-id", type=_parse_sentence_range, default=None, metavar="ID|START:END", help="Restrict sentence/lxs rows by internal ex_sen_lx sentence ID")
@@ -326,7 +327,8 @@ def main():
 	process.add_argument("--require-semantic-feedback", action="store_true")
 	process.add_argument("--constructions", action="store_true", help="Use curated NRDB constructional evidence during Japanese translation")
 	process.add_argument("--licensed", action="store_true", help="Use grammar-licensed generated forms as forward morphology evidence")
-	process.add_argument("--morphology-source", choices=["predict", "existing", "auto"], default="predict")
+	process.add_argument("--nrdb-evidence", choices=["none", "enabled"], default="enabled")
+	process.add_argument("--morphology-source", choices=["none", "predict", "existing", "auto"], default="predict")
 	process.add_argument("--needs", choices=["any", "annotation", "translation", "either", "both"], default="any")
 	process.add_argument("--model", default="gpt-5.6")
 	_add_forward_morph_args(process)
@@ -345,6 +347,8 @@ def main():
 	translate.add_argument("--require-semantic-feedback", action="store_true")
 	translate.add_argument("--constructions", action="store_true", help="Use curated NRDB constructional evidence before Japanese translation")
 	translate.add_argument("--licensed", action="store_true", help="Use grammar-licensed generated forms as forward morphology evidence")
+	translate.add_argument("--nrdb-evidence", choices=["none", "enabled"], default="enabled", help="Enable or disable NRDB dictionary, corpus, construction, and licensed-form evidence")
+	translate.add_argument("--morphology-source", choices=["none", "predict", "existing", "auto"], default="predict", help="Miyako -> Japanese morphology source")
 	translate.add_argument("--existing-translation", default=None, help="Existing Japanese translation used only when semantic feedback is existing/auto; never exposed to output generation")
 	_add_forward_morph_args(translate)
 	translate.add_argument("--model", default="gpt-5.6")
@@ -427,12 +431,18 @@ def main():
 			)
 		except ValueError as error:
 			parser.error(str(error))
-		if not policy.agent_review and (semantic_feedback != "none" or args.licensed):
-			parser.error("semantic feedback and licensed evidence require --morph-review agent")
+		try:
+			validate_execution_configuration(
+				args.task, args.morphology_source, args.nrdb_evidence, semantic_feedback,
+				require_semantic_feedback, args.constructions, args.licensed, policy,
+			)
+		except ValueError as error:
+			parser.error(str(error))
 		_print_json(nrdb.create_workflow_job(
 			args.dataset_id, args.task, args.limit, args.model, args.seed,
 			semantic_feedback=semantic_feedback, require_semantic_feedback=require_semantic_feedback,
 			use_constructions=args.constructions, use_licensed_forms=args.licensed,
+			nrdb_evidence=args.nrdb_evidence,
 			morphology_source=args.morphology_source, needs_filter=args.needs,
 			scope_text_id=args.text_id, scope_sentence_start=start, scope_sentence_end=end,
 			execution_policy=policy.manifest(),
@@ -458,6 +468,18 @@ def main():
 		except ValueError as error:
 			parser.error(str(error))
 		if args.task == "reverse" and (args.constructions or args.licensed): parser.error("--constructions and --licensed apply only to Miyako -> Japanese/forward morphology workflows")
+		try:
+			policy = forward_morph_policy(
+				review=args.morph_review, resegmentation=args.resegmentation, id_model=args.id_model,
+				surface_model=args.surface_model, max_segmentation_candidates=args.max_segmentation_candidates,
+				morphology_source=args.morphology_source, task=args.task,
+			)
+			validate_execution_configuration(
+				args.task, args.morphology_source, args.nrdb_evidence, semantic_feedback,
+				require_semantic_feedback, args.constructions, args.licensed, policy,
+			)
+		except ValueError as error:
+			parser.error(str(error))
 		display = (lambda _message: None) if args.json else WorkflowProgress(output_mode_from_args(args))
 		try:
 			value = process_dataset(
@@ -465,6 +487,7 @@ def main():
 				annotation_schema_id=args.annotation_schema_id, region=args.region, default_dialect_id=args.dialect_id,
 				semantic_feedback=semantic_feedback, require_semantic_feedback=require_semantic_feedback,
 				use_constructions=args.constructions, use_licensed_forms=args.licensed,
+				nrdb_evidence=args.nrdb_evidence,
 				morphology_source=args.morphology_source, needs=args.needs,
 				target_dialect_ids=args.dialects, id_model=args.id_model, surface_model=args.surface_model,
 				morph_review=args.morph_review, resegmentation=args.resegmentation, max_segmentation_candidates=args.max_segmentation_candidates,
@@ -477,7 +500,7 @@ def main():
 		if args.target == "miyako" and not args.dialects: parser.error("Japanese -> Miyako translation requires --dialects ID1,ID2,...")
 		if args.json and _explicit_output_mode(args): parser.error("--json cannot be combined with --quiet, --verbose, --silent, or --compact")
 		semantic_feedback = args.semantic_feedback
-		if semantic_feedback is None: semantic_feedback = "generated" if args.target == "japanese" else "none"
+		if semantic_feedback is None: semantic_feedback = "generated" if args.target == "japanese" and args.morphology_source != "none" else "none"
 		if args.target == "miyako" and (semantic_feedback != "none" or args.require_semantic_feedback or args.existing_translation or args.constructions or args.licensed):
 			parser.error("semantic feedback, constructions and licensed forms are only applicable to direct Miyako -> Japanese translation")
 		kwargs = dict(
@@ -485,6 +508,7 @@ def main():
 			morph_review=args.morph_review, resegmentation=args.resegmentation, max_segmentation_candidates=args.max_segmentation_candidates,
 			semantic_feedback=semantic_feedback, require_semantic_feedback=args.require_semantic_feedback,
 			use_constructions=args.constructions, use_licensed_forms=args.licensed,
+			nrdb_evidence=args.nrdb_evidence, morphology_source=args.morphology_source,
 			existing_translation=args.existing_translation,
 		)
 		if args.json:

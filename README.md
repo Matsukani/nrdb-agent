@@ -13,6 +13,11 @@ All production inputs converge on one `ExecutionRequest` contract:
 - `translate` creates one direct request without creating a database job;
 - `execute` accepts one complete `nrdb-agent.execution-request.v1` JSON object for programmatic callers.
 
+`create`, `process`, and `translate` share the same execution policy. `--nrdb-evidence
+enabled|none` controls access to NRDB linguistic evidence (default: `enabled`), while
+`--morphology-source none|predict|existing|auto` independently controls the morphology
+input. Invalid combinations are rejected before an item or registered job is executed.
+
 Evaluation, frozen cohorts, ablations and discrepancy experiments belong to the separate `nrdb-exp` repository.
 
 Corpus evidence is retrieved from NRDB's current v2 annotation index. Atomic IDs, conflated segments such as `A;cvb`, and segment sequences such as `A-dat` are supported.

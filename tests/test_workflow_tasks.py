@@ -56,6 +56,7 @@ def _run(nrdb, task, **values):
 		require_semantic_feedback=values.pop("require_semantic_feedback", False),
 		use_constructions=values.pop("use_constructions", False),
 		use_licensed_forms=values.pop("use_licensed_forms", False),
+		nrdb_evidence=values.pop("nrdb_evidence", "enabled"),
 		morphology_source=values.pop("morphology_source", "predict"),
 	)
 	assert not values
@@ -114,3 +115,14 @@ def test_required_translation_is_enforced(monkeypatch):
 		assert "required" in str(error)
 	else:
 		raise AssertionError("missing required human translation was accepted")
+
+
+def test_translate_without_morphology_skips_morph_model(monkeypatch):
+	monkeypatch.setattr(execution, "TaskAwareAnnotationAgent", FakeAgent)
+	nrdb = FakeNrdb()
+	result = _run(nrdb, "translate", morphology_source="none")
+	assert nrdb.morph_calls == 0
+	assert result["segmented"] == ""
+	assert result["annotation"] == ""
+	assert result["translation"] == "訳"
+	assert result["morph_baseline"] is None

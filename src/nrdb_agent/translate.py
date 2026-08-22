@@ -35,8 +35,9 @@ def _trace_usage(progress, usage):
 def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids=None,
 	model_name="gpt-5.6", surface_model=None, id_model=None, semantic_feedback=None,
 	require_semantic_feedback=False, use_constructions=False, use_licensed_forms=False,
+	nrdb_evidence="enabled", morphology_source=None,
 	existing_translation=None, fixed_segmented=None, fixed_annotation=None,
-	sentence_id=0, morph_review="agent", resegmentation=False, max_segmentation_candidates=4,
+	sentence_id=0, morph_review=None, resegmentation=False, max_segmentation_candidates=4,
 	morph_policy=None, openai_client=None, progress=print):
 	text = str(text or "").strip()
 	region = str(region or "").strip()
@@ -57,13 +58,20 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 		if bool(fixed_segmented) != bool(fixed_annotation):
 			raise ValueError("fixed morphology requires both segmentation and annotation")
 		use_fixed = bool(fixed_segmented and fixed_annotation)
+		morphology_source = str(morphology_source or ("existing" if use_fixed else "predict"))
+		if use_fixed and morphology_source not in {"existing", "auto"}:
+			raise ValueError("fixed morphology requires morphology_source=existing or auto")
+		if morphology_source == "existing" and not use_fixed:
+			raise ValueError("morphology_source=existing requires fixed segmentation and annotation")
+		if morphology_source == "auto":
+			morphology_source = "existing" if use_fixed else "predict"
 		policy = morph_policy or forward_morph_policy(
 			review=morph_review, resegmentation=resegmentation, id_model=id_model, surface_model=surface_model,
 			max_segmentation_candidates=max_segmentation_candidates,
-			morphology_source="existing" if use_fixed else "predict", task="morph-translate",
+			morphology_source=morphology_source, task="translate" if morphology_source == "none" else "morph-translate",
 		)
 		progress("translate: Miyako -> Japanese | region={} morph_dialect={} schema={} model={} morphology={}".format(
-			region, dialects[0], annotation_schema_id, model_name, "gold" if use_fixed else "predicted",
+			region, dialects[0], annotation_schema_id, model_name, morphology_source,
 		))
 		request = ExecutionRequest(
 			item={
@@ -71,11 +79,11 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 				"text": text, "translation_jp": str(existing_translation or "").strip(),
 				"existing_segmented": fixed_segmented, "existing_annotation": fixed_annotation,
 			},
-			task="morph-translate", annotation_schema_id=annotation_schema_id, region=region,
+			task="translate" if morphology_source == "none" else "morph-translate", annotation_schema_id=annotation_schema_id, region=region,
 			model_name=model_name, semantic_feedback=semantic_feedback,
 			require_semantic_feedback=bool(require_semantic_feedback),
 			use_constructions=bool(use_constructions), use_licensed_forms=bool(use_licensed_forms),
-			morphology_source="existing" if use_fixed else "predict", morph_policy=policy,
+			nrdb_evidence=nrdb_evidence, morphology_source=morphology_source, morph_policy=policy,
 		)
 		result = execute_request(nrdb, request, openai_client=openai_client, progress=progress)
 		_trace_morph_provenance(progress, result.get("morph_baseline"))
@@ -85,7 +93,7 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 			"direction": "miyako_to_japanese", "region": region,
 			"annotation_schema_id": annotation_schema_id, "morph_dialect_id": dialects[0],
 			"morph_inference": (result.get("morph_baseline") or {}).get("inference") or {},
-			"llm_model": model_name, "morphology_source": "gold" if use_fixed else "predicted",
+			"llm_model": model_name, "morphology_source": "gold" if use_fixed else morphology_source,
 			"execution_request": request.manifest(),
 		}
 
@@ -101,7 +109,8 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	request = ExecutionRequest(
 		item={"sentence_id": int(sentence_id or 0), "dialect_id": dialects[0], "dialect_region": region, "text": "", "translation_jp": text},
 		task="reverse", annotation_schema_id=annotation_schema_id, region=region, model_name=model_name,
-		semantic_feedback="none", target_dialect_ids=tuple(dialects), morph_policy=policy,
+		semantic_feedback="none", nrdb_evidence=nrdb_evidence,
+		target_dialect_ids=tuple(dialects), morph_policy=policy,
 	)
 	result = execute_request(nrdb, request, openai_client=openai_client, progress=progress)
 	_trace_usage(progress, result.get("api_usage") or {})

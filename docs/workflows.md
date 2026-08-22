@@ -6,7 +6,8 @@
 2. **task/output**: `morph`, `translate`, `morph-translate`, or `reverse`;
 3. **semantic feedback for morphology**: `none`, `generated`, `existing`, or `auto`;
 4. **morphology source**: `predict`, `existing`, or `auto`;
-5. **constructional evidence for Japanese translation**: off by default, enabled with `--constructions`;
+5. **NRDB linguistic evidence**: on by default, disabled with `--nrdb-evidence none`;
+6. **constructional evidence for Japanese translation**: off by default, enabled with `--constructions`;
 6. **morph review**: raw nrdb-morph (`--morph-review none`) or agent review (`--morph-review agent`);
 7. **optional capabilities**: ID critic, surface critic, and resegmentation are independent and disabled unless explicitly passed;
 8. **selection/output**: NRDB scope/missingness or local TSV/JSON output.
@@ -84,9 +85,21 @@ In B, the generated Japanese is internal evidence and `ai_translation` remains e
 
 Produce Japanese from morphology.
 
+- `--morphology-source none`: translation-only raw-text baseline; do not call nrdb-morph and do not produce segmentation or annotation;
 - `--morphology-source existing`: require existing segmentation + annotation, validate them, freeze them, skip nrdb-morph prediction, and run only dictionary-grounded Japanese translation;
 - `--morphology-source auto`: use existing morphology when present; otherwise predict it;
 - `--morphology-source predict`: always infer morphology before translation.
+
+`--nrdb-evidence enabled` is the default and exposes the applicable NRDB dictionary,
+corpus, construction, and licensed-form evidence. `--nrdb-evidence none` removes those
+linguistic evidence tools while retaining operational APIs (job storage, the morphology
+service when requested, and structural validation). Construction and licensed-form flags
+therefore require `--nrdb-evidence enabled`.
+
+The shared execution validator rejects incoherent policies before execution. In particular,
+`morphology_source=none` is valid only for translation-only work, requires no morphology
+semantic feedback or morph review, and cannot use morphology-addressed constructions or
+licensed forms. Reverse realization currently requires NRDB evidence.
 
 Semantic feedback remains independent. For example, `--task translate --morphology-source predict --semantic-feedback none` translates the final predicted morphology but does not use generated Japanese to revise it. `--semantic-feedback generated` performs the semantic review before producing the final translation.
 
