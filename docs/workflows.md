@@ -99,7 +99,8 @@ therefore require `--nrdb-evidence enabled`.
 The shared execution validator rejects incoherent policies before execution. In particular,
 `morphology_source=none` is valid only for translation-only work, requires no morphology
 semantic feedback or morph review, and cannot use morphology-addressed constructions or
-licensed forms. Reverse realization currently requires NRDB evidence.
+licensed forms. Existing morphology is frozen and likewise cannot use morph review or critic
+models. Reverse realization currently requires NRDB evidence and has no morphology-source axis.
 
 Semantic feedback remains independent. For example, `--task translate --morphology-source predict --semantic-feedback none` translates the final predicted morphology but does not use generated Japanese to revise it. `--semantic-feedback generated` performs the semantic review before producing the final translation.
 

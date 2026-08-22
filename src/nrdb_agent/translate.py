@@ -47,7 +47,8 @@ def translate_text(nrdb, text, target, annotation_schema_id, region, dialect_ids
 	if annotation_schema_id <= 0: raise ValueError("annotation schema ID must be positive")
 	target = str(target or "").strip().lower()
 	if target not in {"japanese", "miyako"}: raise ValueError("target must be japanese or miyako")
-	semantic_feedback = str(semantic_feedback if semantic_feedback is not None else ("generated" if target == "japanese" else "none"))
+	has_fixed_morphology = bool(str(fixed_segmented or "").strip() and str(fixed_annotation or "").strip())
+	semantic_feedback = str(semantic_feedback if semantic_feedback is not None else ("generated" if target == "japanese" and not has_fixed_morphology else "none"))
 	if semantic_feedback not in SEMANTIC_FEEDBACK_MODES: raise ValueError("invalid semantic_feedback: {}".format(semantic_feedback))
 	dialects = _dialect_ids(nrdb, region, annotation_schema_id, dialect_ids)
 	nrdb.exclude_job_id = 0

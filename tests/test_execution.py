@@ -57,3 +57,17 @@ def test_morphology_none_requires_translation_only_and_no_review():
 		assert "translation-only" in str(error)
 	else:
 		raise AssertionError("morphology_source=none was accepted for a morphology task")
+
+
+def test_existing_morphology_rejects_agent_review_policy():
+	policy = forward_morph_policy(review="agent", morphology_source="predict", task="translate")
+	try:
+		ExecutionRequest(
+			item={"sentence_id": 7, "dialect_id": 19, "text": "aga", "segmented": "a-ga", "annotation": "x-y"},
+			task="translate", annotation_schema_id=2, region="宮古",
+			semantic_feedback="none", morphology_source="existing", morph_policy=policy,
+		)
+	except ValueError as error:
+		assert "frozen" in str(error)
+	else:
+		raise AssertionError("agent morph review was accepted for frozen morphology")

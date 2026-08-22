@@ -19,7 +19,7 @@ SEMANTIC_FEEDBACK_CHOICES = ["none", "generated", "existing", "auto"]
 
 
 def _add_forward_morph_args(parser):
-	parser.add_argument("--morph-review", choices=["none", "agent"], default=None, help="Keep the deployed morph baseline or run agent morphology review (default: agent, or none when morphology is disabled)")
+	parser.add_argument("--morph-review", choices=["none", "agent"], default=None, help="Keep the deployed morph baseline or run agent morphology review (default: agent for prediction; none for disabled/frozen morphology)")
 	parser.add_argument("--resegmentation", action="store_true", help="Explicitly allow one bounded fixed-segmentation probe batch")
 	parser.add_argument("--max-segmentation-candidates", type=int, default=4, help="Maximum alternatives in the single segmentation-probe batch")
 	parser.add_argument("--id-model", default=None, help="Explicit nrdb-morph ID-sequence critic path")
@@ -503,6 +503,19 @@ def main():
 		if semantic_feedback is None: semantic_feedback = "generated" if args.target == "japanese" and args.morphology_source != "none" else "none"
 		if args.target == "miyako" and (semantic_feedback != "none" or args.require_semantic_feedback or args.existing_translation or args.constructions or args.licensed):
 			parser.error("semantic feedback, constructions and licensed forms are only applicable to direct Miyako -> Japanese translation")
+		validation_task = "reverse" if args.target == "miyako" else ("translate" if args.morphology_source == "none" else "morph-translate")
+		try:
+			policy = forward_morph_policy(
+				review=args.morph_review, resegmentation=args.resegmentation, id_model=args.id_model,
+				surface_model=args.surface_model, max_segmentation_candidates=args.max_segmentation_candidates,
+				morphology_source=args.morphology_source, task=validation_task,
+			)
+			validate_execution_configuration(
+				validation_task, args.morphology_source, args.nrdb_evidence, semantic_feedback,
+				args.require_semantic_feedback, args.constructions, args.licensed, policy,
+			)
+		except ValueError as error:
+			parser.error(str(error))
 		kwargs = dict(
 			dialect_ids=args.dialects, model_name=args.model, id_model=args.id_model, surface_model=args.surface_model,
 			morph_review=args.morph_review, resegmentation=args.resegmentation, max_segmentation_candidates=args.max_segmentation_candidates,

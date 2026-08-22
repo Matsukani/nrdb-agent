@@ -157,10 +157,15 @@ def validate_execution_configuration(task, morphology_source="predict", nrdb_evi
 	if task not in TASKS: raise ValueError("invalid task: {}".format(task))
 	if source not in MORPHOLOGY_SOURCES: raise ValueError("invalid morphology_source: {}".format(source))
 	if evidence not in NRDB_EVIDENCE_MODES: raise ValueError("invalid nrdb_evidence: {}".format(evidence))
+	if semantic not in SEMANTIC_FEEDBACK_MODES: raise ValueError("invalid semantic_feedback: {}".format(semantic))
+	if task == "morph" and use_constructions:
+		raise ValueError("--constructions requires a translation task")
 	if evidence == "none" and (use_constructions or use_licensed_forms):
 		raise ValueError("--constructions and --licensed require --nrdb-evidence enabled")
 	if task == "reverse" and evidence == "none":
 		raise ValueError("nrdb_evidence=none is not supported for reverse realization")
+	if task == "reverse" and source != "predict":
+		raise ValueError("--morphology-source is not applicable to reverse realization")
 	if source == "none":
 		if task != "translate":
 			raise ValueError("morphology_source=none is valid only for translation-only tasks")
@@ -174,6 +179,10 @@ def validate_execution_configuration(task, morphology_source="predict", nrdb_evi
 		raise ValueError("predicted_morphology requires morphology_source=predict")
 	if morph_policy is not None:
 		morph_policy.validate(morphology_source=source, task=task)
+		if not morph_policy.agent_review and semantic != "none":
+			raise ValueError("semantic feedback requires --morph-review agent")
+		if not morph_policy.agent_review and use_licensed_forms:
+			raise ValueError("licensed morphology evidence requires --morph-review agent")
 	return True
 
 
