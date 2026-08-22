@@ -1,4 +1,5 @@
-from nrdb_agent import workflow
+from nrdb_agent import execution
+from nrdb_agent.execution import ExecutionRequest
 
 
 class FakeNrdb:
@@ -48,10 +49,23 @@ def _item(**values):
 	return base
 
 
+def _run(nrdb, task, **values):
+	request = ExecutionRequest(
+		item=_item(**values.pop("item", {})), task=task, annotation_schema_id=2, region="宮古",
+		semantic_feedback=values.pop("semantic_feedback", "none"),
+		require_semantic_feedback=values.pop("require_semantic_feedback", False),
+		use_constructions=values.pop("use_constructions", False),
+		use_licensed_forms=values.pop("use_licensed_forms", False),
+		morphology_source=values.pop("morphology_source", "predict"),
+	)
+	assert not values
+	return execution.execute_request(nrdb, request)
+
+
 def test_translate_existing_skips_morph_model(monkeypatch):
-	monkeypatch.setattr(workflow, "TaskAwareAnnotationAgent", FakeAgent)
+	monkeypatch.setattr(execution, "TaskAwareAnnotationAgent", FakeAgent)
 	nrdb = FakeNrdb()
-	result = workflow.execute_item(nrdb, _item(), "translate", 2, "宮古", morphology_source="existing")
+	result = _run(nrdb, "translate", morphology_source="existing")
 	assert nrdb.morph_calls == 0
 	assert result["annotation"] == "gold-ann"
 	assert result["translation"] == "訳"
@@ -59,37 +73,31 @@ def test_translate_existing_skips_morph_model(monkeypatch):
 
 
 def test_translate_threads_construction_mode_independently(monkeypatch):
-	monkeypatch.setattr(workflow, "TaskAwareAnnotationAgent", FakeAgent)
+	monkeypatch.setattr(execution, "TaskAwareAnnotationAgent", FakeAgent)
 	FakeAgent.last_job = None
 	nrdb = FakeNrdb()
-	result = workflow.execute_item(
-		nrdb, _item(), "translate", 2, "宮古",
-		morphology_source="existing", semantic_feedback="none", use_constructions=True,
-	)
+	result = _run(nrdb, "translate", morphology_source="existing", semantic_feedback="none", use_constructions=True)
 	assert FakeAgent.last_job["semantic_feedback"] == "none"
 	assert FakeAgent.last_job["use_constructions"] is True
 	assert result["use_constructions"] is True
 
 
 def test_predict_threads_licensed_mode_and_selects_licensed_agent(monkeypatch):
-	monkeypatch.setattr(workflow, "LicensedTaskAwareAnnotationAgent", FakeAgent)
+	monkeypatch.setattr(execution, "LicensedTaskAwareAnnotationAgent", FakeAgent)
 	FakeAgent.last_job = None
 	nrdb = FakeNrdb()
-	result = workflow.execute_item(
-		nrdb, _item(), "morph", 2, "宮古",
-		morphology_source="predict", semantic_feedback="none", use_licensed_forms=True,
-	)
+	result = _run(nrdb, "morph", morphology_source="predict", semantic_feedback="none", use_licensed_forms=True)
 	assert nrdb.morph_calls == 1
 	assert FakeAgent.last_job["use_licensed_forms"] is True
 	assert result["use_licensed_forms"] is True
 
 
 def test_auto_uses_existing_but_predict_calls_morph(monkeypatch):
-	monkeypatch.setattr(workflow, "TaskAwareAnnotationAgent", FakeAgent)
+	monkeypatch.setattr(execution, "TaskAwareAnnotationAgent", FakeAgent)
 	nrdb = FakeNrdb()
-	workflow.execute_item(nrdb, _item(), "morph", 2, "宮古", morphology_source="auto")
+	_run(nrdb, "morph", morphology_source="auto")
 	assert nrdb.morph_calls == 0
-	result = workflow.execute_item(nrdb, _item(), "morph", 2, "宮古", morphology_source="predict")
+	result = _run(nrdb, "morph", morphology_source="predict")
 	assert nrdb.morph_calls == 1
 	assert result["morph_baseline"]["source"] == "nrdb-morph"
 	assert result["morph_baseline"]["segmented"] == "pred-seg"
@@ -98,10 +106,10 @@ def test_auto_uses_existing_but_predict_calls_morph(monkeypatch):
 
 
 def test_required_translation_is_enforced(monkeypatch):
-	monkeypatch.setattr(workflow, "TaskAwareAnnotationAgent", FakeAgent)
+	monkeypatch.setattr(execution, "TaskAwareAnnotationAgent", FakeAgent)
 	nrdb = FakeNrdb()
 	try:
-		workflow.execute_item(nrdb, _item(translation_jp=""), "morph", 2, "宮古", translation_evidence="required")
+		_run(nrdb, "morph", item={"translation_jp": ""}, semantic_feedback="existing", require_semantic_feedback=True)
 	except ValueError as error:
 		assert "required" in str(error)
 	else:

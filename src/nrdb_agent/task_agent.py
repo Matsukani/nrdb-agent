@@ -183,20 +183,8 @@ class TaskAwareAnnotationAgent(AnnotationAgentV9):
 
 	@staticmethod
 	def _semantic_policy(job, human_translation):
-		mode = job.get("semantic_feedback")
+		mode = str(job.get("semantic_feedback") or "none")
 		require = bool(job.get("require_semantic_feedback"))
-		if not mode:
-			# Backward compatibility for jobs created before semantic_feedback became
-			# an orthogonal workflow axis.
-			legacy = str(job.get("translation_evidence") or "ignore")
-			if legacy == "required":
-				mode = "existing"
-				require = True
-			elif legacy == "use":
-				mode = "auto"
-			else:
-				mode = "none"
-		mode = str(mode)
 		if mode not in SEMANTIC_FEEDBACK_MODES:
 			raise ValueError("invalid semantic_feedback mode: {}".format(mode))
 		active = mode

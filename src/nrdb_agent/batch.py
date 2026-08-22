@@ -2,8 +2,8 @@ import json
 from pathlib import Path
 
 from .dataset_io import item_matches_needs, load_dataset, output_row, write_json, write_tsv
+from .execution import ExecutionRequest, execute_request
 from .policy import forward_morph_policy
-from .workflow import execute_item
 
 
 def _pricing_complete(result):
@@ -17,7 +17,7 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 	use_licensed_forms=False, morphology_source="predict", needs="any",
 	target_dialect_ids=None, id_model=None, surface_model=None, morph_review="agent",
 	resegmentation=False, max_segmentation_candidates=4, output=None, limit=None,
-	progress=print, translation_evidence=None):
+	progress=print):
 	bundle = load_dataset(
 		input_path, component=component, annotation_schema_id=annotation_schema_id,
 		region=region, default_dialect_id=default_dialect_id,
@@ -52,18 +52,16 @@ def process_dataset(nrdb, input_path, task, model_name="gpt-5.6", component=None
 			item["existing_segmented"] = ""
 			item["existing_annotation"] = ""
 		try:
-			result = execute_item(
-				nrdb, item, task, bundle["annotation_schema_id"], bundle["region"],
+			request = ExecutionRequest(
+				item=item, task=task, annotation_schema_id=bundle["annotation_schema_id"], region=bundle["region"],
 				model_name=model_name, semantic_feedback=semantic_feedback,
 				require_semantic_feedback=require_semantic_feedback,
 				use_constructions=use_constructions, use_licensed_forms=use_licensed_forms,
-				translation_evidence=translation_evidence,
-				morphology_source=morphology_source, target_dialect_ids=target_dialect_ids,
-				id_model=id_model, surface_model=surface_model, progress=progress,
-				morph_review=morph_review, resegmentation=resegmentation,
-				max_segmentation_candidates=max_segmentation_candidates,
+				morphology_source=morphology_source,
+				target_dialect_ids=tuple(int(value) for value in target_dialect_ids) if target_dialect_ids else None,
 				morph_policy=policy,
 			)
+			result = execute_request(nrdb, request, progress=progress)
 			rows.append(output_row(source_item, result=result))
 			cost += float(result.get("estimated_cost_usd") or 0.0)
 			pricing_complete = pricing_complete and _pricing_complete(result)

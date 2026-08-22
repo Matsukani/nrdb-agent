@@ -17,7 +17,6 @@ dev = ["pytest>=8,<9"]
 
 [project.scripts]
 nrdb-agent = "nrdb_agent.cli:main"
-nrdb-agent-morph-eval = "nrdb_agent.morph_eval_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

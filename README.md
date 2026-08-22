@@ -4,17 +4,16 @@ Constrained, auditable AI agents for NRDB. The first workflow performs morphemic
 
 ## Design
 
-NRDB owns jobs, corpus data, lexical grounding, gold annotations, results, and the deployed model registry. `nrdb-agent` owns only orchestration and LLM reasoning. It talks to NRDB through loopback-only PHP endpoints and to the dedicated `nrdb-morph` installation through its local HTTP service. `nrdb-agent` does not select nrdb-morph model artifacts.
+NRDB owns jobs, corpus data, lexical grounding, human annotations, results, and the deployed model registry. `nrdb-agent` owns production morphology/translation execution and LLM reasoning. It talks to NRDB through loopback-only PHP endpoints and to the dedicated `nrdb-morph` installation through its local HTTP service.
 
-Initial job modes:
+All production inputs converge on one `ExecutionRequest` contract:
 
-- `blind_gold`: evaluate on already human-annotated material. Gold annotation is never returned in the work item; it is revealed only after the AI result has been stored and scored.
-- `unannotated`: propose annotations for rows with blank human annotation. Results remain separate from the human annotation.
+- `create` records a scoped NRDB job and immutable execution policy; `run` executes it and stores results;
+- `process` reads portable XLSX/TSV data and exports local results without creating a database job;
+- `translate` creates one direct request without creating a database job;
+- `execute` accepts one complete `nrdb-agent.execution-request.v1` JSON object for programmatic callers.
 
-Translation options:
-
-- `--translate`: also generate a Japanese translation and store it as `trsl_ai`; an existing human `translation_jp` may still be used as annotation evidence.
-- `--blind-translation`: implies translation, withholds `translation_jp` from the agent, and stores the human translation only after submission as `gold_translation_jp` for later evaluation.
+Evaluation, frozen cohorts, ablations and discrepancy experiments belong to the separate `nrdb-exp` repository.
 
 Corpus evidence is retrieved from NRDB's current v2 annotation index. Atomic IDs, conflated segments such as `A;cvb`, and segment sequences such as `A-dat` are supported.
 
@@ -59,38 +58,23 @@ nrdb-agent translate '日本語の文' \
 
 Reverse translation runs Japanese-to-ID reasoning, dialect-scoped trsc2 surface retrieval, annotation-syntax enforcement, and an optional explicitly selected nrdb-morph allomorph/phonotactic critic. Critics are never silently loaded from environment variables. Add `--json` to print the complete audit result instead of the compact demo output.
 
-## First blind experiment
+## Registered production job
 
 ```bash
-nrdb-agent create --dataset-id 27 --mode blind_gold --limit 20 --model gpt-5.6
+nrdb-agent create --dataset-id 27 --task morph --needs annotation --limit 20 --model gpt-5.6
 nrdb-agent list
 nrdb-agent run JOB_ID
 nrdb-agent show JOB_ID
 ```
 
-With translation enabled but human translation still available as annotation evidence:
+Create a translation job from existing morphology:
 
 ```bash
-nrdb-agent create --dataset-id 27 --mode blind_gold --limit 20 --model gpt-5.6 --translate
+nrdb-agent create --dataset-id 27 --task translate --morphology-source existing \
+	--semantic-feedback none --constructions --needs translation --limit 20
 ```
 
-For true blind translation:
-
-```bash
-nrdb-agent create --dataset-id 27 --mode blind_gold --limit 20 --model gpt-5.6 --blind-translation
-nrdb-agent run JOB_ID
-nrdb-agent show JOB_ID
-```
-
-Then scale to 500 only after inspecting small runs:
-
-```bash
-nrdb-agent create --dataset-id 27 --mode blind_gold --limit 500 --model gpt-5.6 --seed 2 --blind-translation
-nrdb-agent run JOB_ID
-nrdb-agent show JOB_ID
-```
-
-The running agent does not learn online from gold mismatches. Blind results are retained as evaluation evidence for explicit later revisions to prompts, tools, or models.
+The job record freezes the exact morphology-review, critic and resegmentation policy. `run` cannot silently override it.
 
 ## Corpus-based grammatical ID analysis
 

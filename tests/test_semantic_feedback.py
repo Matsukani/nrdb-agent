@@ -104,7 +104,7 @@ def test_existing_feedback_uses_data_translation_without_generating_one_for_morp
 	assert result["evidence"]["semantic_feedback"]["source"] == "human"
 
 
-def test_v9_semantic_review_adapters_expose_cached_evidence_and_legacy_parser_signature():
+def test_v9_semantic_review_adapters_expose_cached_evidence_and_parser_signature():
 	agent = SemanticHarness()
 	agent._shared_evidence = {
 		"lookup": {
@@ -131,10 +131,3 @@ def test_v9_semantic_review_adapters_expose_cached_evidence_and_legacy_parser_si
 	)
 	assert parsed["action"] == "keep"
 	assert agent.max_review_rounds == 4
-
-
-def test_legacy_translation_evidence_use_maps_to_auto_feedback():
-	mode, active, required = TaskAwareAnnotationAgent._semantic_policy({"translation_evidence": "use"}, "")
-	assert mode == "auto"
-	assert active == "generated"
-	assert required is False

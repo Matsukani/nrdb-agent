@@ -156,18 +156,9 @@ Creation freezes the complete forward-morphology policy in the NRDB job: review 
 
 Portable `process` output includes the untouched `morph_segmented`/`morph_annotation` baseline, final agent analysis, and serialized policy.
 
-## Orthogonal morph evaluation
+## Experimental evaluation
 
-`nrdb-agent-morph-eval` exposes the same axes. Freeze selected rows once and reuse them across ablations:
-
-```bash
-nrdb-agent-morph-eval RUN --limit 100 --cohort-out cohort.json --morph-review none --output raw.json
-nrdb-agent-morph-eval RUN --cohort-in cohort.json --morph-review agent --output agent.json
-nrdb-agent-morph-eval RUN --cohort-in cohort.json --morph-review agent --surface-model surface.json --output surface.json
-nrdb-agent-morph-eval RUN --cohort-in cohort.json --morph-review agent --resegmentation --surface-model surface.json --output reseg.json
-```
-
-The cohort has a content fingerprint; checkpoints freeze that fingerprint and the full policy manifest. A mismatched resume is rejected.
+Frozen cohorts, morph evaluation, translation discrepancies and ablations are implemented by `nrdb-exp`. That package invokes this production engine through `ExecutionRequest`; it does not maintain a second morphology/translation implementation.
 
 Export audited results:
 
@@ -227,8 +218,4 @@ With `--verbose`, construction-aware runs report `translation-v7: construction p
 - `either`: at least one absent;
 - `both`: both absent.
 
-## Legacy jobs
-
-The old `--mode blind_gold|unannotated`, `--prompt-version`, `--translate`, `--blind-translation`, and hidden `--translation-evidence` compatibility path remain accepted. New workflows should use the orthogonal controls explicitly.
-
-For `nrdb-agent-morph-eval`, corpus evidence is row-blind by default: the currently scored sentence is excluded from corpus examples and form-ID support. Use `--blind-policy cohort` to exclude every sampled evaluation sentence from corpus-backed evidence for the complete run. The selected policy and resulting exclusion ranges are stored in the durable checkpoint and cannot change on resume. Explicit `--exclude-dataset`, `--exclude-text`, and `--exclude-sentences` restrictions are combined with the selected policy. Dictionaries and human-curated licensed forms remain available as declared knowledge sources.
+Every registered job must use the orthogonal workflow fields and a stored execution policy.

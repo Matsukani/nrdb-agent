@@ -81,20 +81,11 @@ class NrdbClient:
 			raise RuntimeError(result.get("error") or "NRDB ID-analysis API failed")
 		return result
 
-	def create_job(self, dataset_id, mode, limit, model_name, prompt_version="annotation-v1", selection_seed=1, produce_translation=False, blind_translation=False):
-		return self._agent_post("create_job", {
-			"dataset_id": int(dataset_id), "mode": mode, "limit": int(limit),
-			"model_name": model_name, "prompt_version": prompt_version,
-			"selection_seed": int(selection_seed),
-			"produce_translation": bool(produce_translation or blind_translation),
-			"blind_translation": bool(blind_translation),
-		})
-
 	def create_workflow_job(self, dataset_id, task, limit, model_name, selection_seed=1,
 		semantic_feedback="none", require_semantic_feedback=False, use_constructions=False,
 		use_licensed_forms=False, morphology_source="predict", needs_filter="any",
 		scope_text_id=None, scope_sentence_start=None, scope_sentence_end=None,
-		translation_evidence=None, execution_policy=None):
+		execution_policy=None):
 		payload = {
 			"dataset_id": int(dataset_id), "task": str(task), "limit": int(limit),
 			"model_name": str(model_name), "selection_seed": int(selection_seed),
@@ -107,8 +98,6 @@ class NrdbClient:
 			"scope_sentence_end": scope_sentence_end,
 			"execution_policy": dict(execution_policy or {}),
 		}
-		if translation_evidence is not None:
-			payload["translation_evidence"] = str(translation_evidence)
 		return self._workflow_post("create_job", payload)
 
 	def jobs(self):
@@ -153,9 +142,6 @@ class NrdbClient:
 		if error_message:
 			payload["error_message"] = str(error_message)
 		return self._id_analysis_post("set_status", payload)
-
-	def job_items(self, job_id):
-		return self._agent_get("job_items", job_id=int(job_id))
 
 	def workflow_job_items(self, job_id):
 		return self._workflow_get("job_items", job_id=int(job_id))

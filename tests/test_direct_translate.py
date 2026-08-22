@@ -1,6 +1,6 @@
 import json
 
-from nrdb_agent import translate as translate_module
+from nrdb_agent import execution, translate as translate_module
 
 
 class FakeNrdb:
@@ -48,6 +48,7 @@ class FakeForwardAgent:
 	def __init__(self, nrdb, model_name, client=None, progress=print, id_model_path=None, morph_policy=None):
 		self.nrdb = nrdb
 		self.morph_policy = morph_policy
+		self.progress = progress
 
 	def annotate(self, item, job, morph):
 		assert item["sentence_id"] == 0
@@ -69,9 +70,16 @@ class ConstructionAwareForwardAgent(FakeForwardAgent):
 
 class LicensedForwardAgent(FakeForwardAgent):
 	def annotate(self, item, job, morph):
+		surfaces = [segment for phrase in morph["segmented"].split() for segment in phrase.split("-")]
+		morph["licensed_realizations"] = self.nrdb.licensed_forms_in_text(
+			item["text"], job["annotation_schema_id"], item["dialect_region"], item["dialect_id"], surfaces=surfaces,
+		)
 		assert job["use_licensed_forms"] is True
 		assert morph["licensed_realizations"]["matches"][0]["annotation"] == "飲nv-ppt>1"
-		return super().annotate(item, job, morph)
+		self.progress("  licensed: grammar-derived surface matches=1")
+		result = super().annotate(item, job, morph)
+		result["evidence"]["licensed_realizations"] = morph["licensed_realizations"]
+		return result
 
 
 class FrozenForwardAgent(FakeForwardAgent):
@@ -123,7 +131,7 @@ class FakeReverseAgent:
 
 
 def test_direct_miyako_to_japanese_uses_region_dialect_morph_service_and_provenance(monkeypatch):
-	monkeypatch.setattr(translate_module, "TaskAwareAnnotationAgent", FakeForwardAgent)
+	monkeypatch.setattr(execution, "TaskAwareAnnotationAgent", FakeForwardAgent)
 	nrdb = FakeNrdb()
 	messages = []
 	result = translate_module.translate_text(nrdb, "mija", "japanese", 2, "宮古", progress=messages.append)
@@ -142,7 +150,7 @@ def test_direct_miyako_to_japanese_uses_region_dialect_morph_service_and_provena
 
 
 def test_direct_miyako_to_japanese_threads_construction_flag(monkeypatch):
-	monkeypatch.setattr(translate_module, "TaskAwareAnnotationAgent", ConstructionAwareForwardAgent)
+	monkeypatch.setattr(execution, "TaskAwareAnnotationAgent", ConstructionAwareForwardAgent)
 	nrdb = FakeNrdb()
 	result = translate_module.translate_text(
 		nrdb, "mija", "japanese", 2, "宮古", use_constructions=True, progress=lambda _: None,
@@ -152,7 +160,7 @@ def test_direct_miyako_to_japanese_threads_construction_flag(monkeypatch):
 
 
 def test_direct_miyako_to_japanese_can_translate_frozen_gold_morphology(monkeypatch):
-	monkeypatch.setattr(translate_module, "TaskAwareAnnotationAgent", FrozenForwardAgent)
+	monkeypatch.setattr(execution, "TaskAwareAnnotationAgent", FrozenForwardAgent)
 	nrdb = FakeNrdb()
 	result = translate_module.translate_text(
 		nrdb, "mija", "japanese", 2, "宮古", fixed_segmented="gold-seg", fixed_annotation="gold-ann",
@@ -166,7 +174,7 @@ def test_direct_miyako_to_japanese_can_translate_frozen_gold_morphology(monkeypa
 
 
 def test_direct_miyako_to_japanese_prefetches_licensed_forms(monkeypatch):
-	monkeypatch.setattr(translate_module, "LicensedTaskAwareAnnotationAgent", LicensedForwardAgent)
+	monkeypatch.setattr(execution, "LicensedTaskAwareAnnotationAgent", LicensedForwardAgent)
 	nrdb = FakeNrdb()
 	messages = []
 	result = translate_module.translate_text(
@@ -180,18 +188,18 @@ def test_direct_miyako_to_japanese_prefetches_licensed_forms(monkeypatch):
 
 def test_direct_translation_retries_malformed_tool_json(monkeypatch):
 	FlakyForwardAgent.attempts = 0
-	monkeypatch.setattr(translate_module, "TaskAwareAnnotationAgent", FlakyForwardAgent)
+	monkeypatch.setattr(execution, "TaskAwareAnnotationAgent", FlakyForwardAgent)
 	nrdb = FakeNrdb()
 	messages = []
 	result = translate_module.translate_text(nrdb, "mija", "japanese", 2, "宮古", progress=messages.append)
 	assert result["translation"] == "見るよ。"
 	assert FlakyForwardAgent.attempts == 2
-	assert any("malformed/truncated tool or final JSON" in message for message in messages)
+	assert any("morphology: malformed/truncated JSON" in message for message in messages)
 
 
 def test_frozen_gold_translation_retries_malformed_json(monkeypatch):
 	FlakyFrozenForwardAgent.attempts = 0
-	monkeypatch.setattr(translate_module, "TaskAwareAnnotationAgent", FlakyFrozenForwardAgent)
+	monkeypatch.setattr(execution, "TaskAwareAnnotationAgent", FlakyFrozenForwardAgent)
 	nrdb = FakeNrdb()
 	messages = []
 	result = translate_module.translate_text(
@@ -200,11 +208,11 @@ def test_frozen_gold_translation_retries_malformed_json(monkeypatch):
 	)
 	assert result["translation"] == "金形態からの訳"
 	assert FlakyFrozenForwardAgent.attempts == 2
-	assert any("malformed/truncated frozen-translation JSON" in message for message in messages)
+	assert any("translation: malformed/truncated JSON" in message for message in messages)
 
 
 def test_direct_japanese_to_miyako_uses_ordered_dialects_and_surface_critic(monkeypatch):
-	monkeypatch.setattr(translate_module, "SurfaceCriticReverseAgent", FakeReverseAgent)
+	monkeypatch.setattr(execution, "SurfaceCriticReverseAgent", FakeReverseAgent)
 	nrdb = FakeNrdb()
 	result = translate_module.translate_text(
 		nrdb, "魚を取りに行こう", "miyako", 2, "宮古",
